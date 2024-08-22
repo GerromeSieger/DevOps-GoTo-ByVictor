@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 # Define variables
 BACKUP_DIR = "/var/lib/postgresql/pgbackup"
-DB_NAME = "plemuz"
+DB_NAME = "rmosvlrr"
 S3_BUCKET = "pg-backup"
 S3_PROFILE = "eu2"
 S3_REGION = "default"

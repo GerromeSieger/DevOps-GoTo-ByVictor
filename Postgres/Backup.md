@@ -74,7 +74,7 @@ sudo -u postgres /var/lib/postgresql/postgres_backup.sh
 sudo -u postgres crontab -e
 ```
 
-- Add the following line to run the backup every 5 hours:
+- Add the following line to run the backup every 4 days:
 
 ```bash
 0 0 */4 * * /var/lib/postgresql/postgres_backup.sh
