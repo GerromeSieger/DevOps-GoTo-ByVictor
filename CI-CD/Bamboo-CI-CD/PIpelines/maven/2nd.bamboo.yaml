@@ -1,0 +1,56 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Maven_Build
+
+stages:
+  - Build:
+      jobs:
+        - Maven-Build-Job
+
+Maven-Build-Job:
+  artifacts:
+    - name: build-artifacts
+      location: target
+      pattern: "**/*"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up any previous container"
+            docker rm -f maven-builder || true
+
+            echo "Starting Docker container for Maven build"
+            docker run -d --name maven-builder maven:3.8-openjdk-17 tail -f /dev/null
+
+            echo "Copying source files into the container"
+            docker cp "${bamboo.build.working.directory}" maven-builder:/app
+
+            echo "Setting environment variables"
+            export MAVEN_OPTS="-Dmaven.repo.local=.m2/repository"
+
+            echo "Running Maven build process"
+            docker exec maven-builder sh -c "
+              cd /app &&
+              export MAVEN_OPTS='-Dmaven.repo.local=/app/.m2/repository' && \\
+              mvn -B package --file pom.xml
+            "
+
+            echo "Copying build artifacts back to host"
+            docker cp maven-builder:/app/target "${bamboo.build.working.directory}" || echo "No target directory found"
+
+            echo "Copying local Maven repo for caching (optional)"
+            docker cp maven-builder:/app/.m2 "${bamboo.build.working.directory}" || echo "No .m2 repository found"
+
+            echo "Stopping and cleaning up container"
+            docker stop maven-builder
+            docker rm maven-builder
+
+            echo "Maven build completed successfully"

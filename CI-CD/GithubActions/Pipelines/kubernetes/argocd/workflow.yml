@@ -1,0 +1,69 @@
+name: ArgoCD workflow
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout React App
+      uses: actions/checkout@v2
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18'
+    - name: Install Dependencies
+      run: echo "npm ci"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+          
+      - name: Build and Push
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Clone K8s Manifests Repo
+        run: |
+          git clone https://x-access-token:${{ secrets.MANIFEST_REPO_PAT }}@${{ secrets.K8S_MANIFEST_REPO }} k8s-manifests
+          cd k8s-manifests
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git pull origin main
+          awk -v image="${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}" '
+            /image:/ {$0 = "        image: " image}
+            {print}
+          ' app.yml > temp.yml && mv temp.yml app.yml
+          if [[ -n $(git status -s) ]]; then
+            echo "Changes detected. Committing and pushing..."
+            git add .
+            git commit -m "Update image tag to ${{ env.DOCKER_TAG }}"
+            git push
+          else
+            echo "No changes detected in Kubernetes manifests."
+          fi

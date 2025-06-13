@@ -1,0 +1,59 @@
+stages:
+  - security
+
+# Define variables
+variables:
+  RESULTS_DIR: "${CI_PROJECT_DIR}/results"
+
+# Streamlined TruffleHog scan
+trufflehog-scan:
+  stage: security
+  image: python:3.9-slim
+  before_script:
+    - apt-get update && apt-get install -y git
+    - pip install trufflehog==2.2.1
+    - mkdir -p $RESULTS_DIR
+  script:
+    - echo "Running streamlined TruffleHog scan..."
+    
+    # Create simplified report header
+    - |
+      cat > $RESULTS_DIR/trufflehog-report.md << EOF
+      # TruffleHog Security Scan Results
+      **Repository:** ${CI_PROJECT_PATH}  
+      **Branch:** ${CI_COMMIT_REF_NAME}  
+      **Commit:** ${CI_COMMIT_SHA}  
+      **Date:** $(date)
+      
+      ## Findings
+      
+      EOF
+    
+    # Run TruffleHog with minimal options and process directly to markdown
+    - |
+      trufflehog --json https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git 2>/dev/null | \
+      while read -r line; do
+        if [ ! -z "$line" ]; then
+          file=$(echo $line | grep -o '"path": "[^"]*"' | cut -d'"' -f4 || echo "Unknown file")
+          reason=$(echo $line | grep -o '"reason": "[^"]*"' | cut -d'"' -f4 || echo "Unknown reason")
+          commit=$(echo $line | grep -o '"commit": "[^"]*"' | cut -d'"' -f4 || echo "Unknown commit")
+          
+          echo "### Finding in $file" >> $RESULTS_DIR/trufflehog-report.md
+          echo "* **Reason:** $reason" >> $RESULTS_DIR/trufflehog-report.md
+          echo "* **Commit:** $commit" >> $RESULTS_DIR/trufflehog-report.md
+          echo "" >> $RESULTS_DIR/trufflehog-report.md
+        fi
+      done || true
+    
+    # Add a note if no findings
+    - |
+      if [ ! -s "$RESULTS_DIR/trufflehog-report.md" ]; then
+        echo "No security issues found." >> $RESULTS_DIR/trufflehog-report.md
+      fi
+    
+    - echo "Scan completed. Results saved to $RESULTS_DIR/trufflehog-report.md"
+  artifacts:
+    paths:
+      - $RESULTS_DIR/trufflehog-report.md
+    expire_in: 1 week
+    when: always

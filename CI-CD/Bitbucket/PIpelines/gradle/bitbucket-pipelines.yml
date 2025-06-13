@@ -1,0 +1,15 @@
+pipelines:
+  default:
+    - step:
+        name: Build with Gradle
+        image: gradle:7.4-jdk17
+        caches:
+          - gradle
+        script:
+          - ./gradlew build -Dorg.gradle.daemon=false
+        artifacts:
+          - build/libs/*.jar
+
+definitions:
+  caches:
+    gradle: ~/.gradle/caches

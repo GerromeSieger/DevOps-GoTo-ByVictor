@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+    stages {
+        stage('TruffleHog Security Scan') {
+            agent {
+                docker {
+                    image 'python:3.9-slim'
+                    args '-u root'
+                    reuseNode true
+                }
+            }
+            environment {
+                RESULTS_DIR = "${env.WORKSPACE}/results"
+            }    
+            steps {
+                script {
+                    try {
+                        echo 'Setting up TruffleHog environment...'
+                        sh '''
+                            apt-get update && apt-get install -y git
+                            pip install trufflehog==2.2.1
+                            mkdir -p "$RESULTS_DIR"
+                        '''
+                        
+                        echo 'Running streamlined TruffleHog scan...'
+                        
+                        // Create report header
+                        sh """
+                            cat > "$RESULTS_DIR/trufflehog-report.md" << EOF
+                            # TruffleHog Security Scan Results
+                            **Repository:** ${env.JOB_NAME}  
+                            **Build:** ${env.BUILD_NUMBER}  
+                            **Date:** \$(date)
+                            
+                            ## Findings
+                            
+                            EOF
+                        """
+                        
+                        // Run TruffleHog scan (using local repo path)
+                        sh """
+                            trufflehog --json file://${env.WORKSPACE} 2>/dev/null | \
+                            while read -r line; do
+                                if [ ! -z "\$line" ]; then
+                                    file=\$(echo \$line | grep -o '"path": "[^"]*"' | cut -d'"' -f4 || echo "Unknown file")
+                                    reason=\$(echo \$line | grep -o '"reason": "[^"]*"' | cut -d'"' -f4 || echo "Unknown reason")
+                                    commit=\$(echo \$line | grep -o '"commit": "[^"]*"' | cut -d'"' -f4 || echo "Unknown commit")
+                                    
+                                    echo "### Finding in \$file" >> "$RESULTS_DIR/trufflehog-report.md"
+                                    echo "* **Reason:** \$reason" >> "$RESULTS_DIR/trufflehog-report.md"
+                                    echo "* **Commit:** \$commit" >> "$RESULTS_DIR/trufflehog-report.md"
+                                    echo "" >> "$RESULTS_DIR/trufflehog-report.md"
+                                fi
+                            done || true
+                        """
+                        
+                        // Add note if no findings
+                        sh """
+                            if [ ! -s "$RESULTS_DIR/trufflehog-report.md" ]; then
+                                echo "No security issues found." >> "$RESULTS_DIR/trufflehog-report.md"
+                            fi
+                        """
+                        
+                        echo "Scan completed. Results saved to $RESULTS_DIR/trufflehog-report.md"
+                        
+                        // Archive results
+                        archiveArtifacts artifacts: 'results/trufflehog-report.md', fingerprint: true
+                        
+                    } catch (Exception e) {
+                        echo "Error occurred during security scan: ${e.message}"
+                        currentBuild.result = 'FAILURE'
+                        throw e
+                    }
+                }
+            }
+            post {
+                always {
+                    echo 'Cleaning up Docker image...'
+                    sh 'docker rmi python:3.9-slim || true'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            cleanWs()
+        }
+    }
+}

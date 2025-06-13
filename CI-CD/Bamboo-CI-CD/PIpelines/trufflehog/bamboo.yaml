@@ -1,0 +1,92 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: TruffleHog-Security-Scan
+
+stages:
+  - Security:
+      jobs:
+        - TruffleHog-Scan
+
+# === TRUFFLEHOG SCAN JOB ===
+TruffleHog-Scan:
+  artifacts:
+    - name: trufflehog-results
+      location: results
+      pattern: "*.md"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f trufflehog-runner || true
+
+            echo "Creating results directory"
+            RESULTS_DIR="${bamboo.build.working.directory}/results"
+            mkdir -p "$RESULTS_DIR"
+
+            echo "Starting temporary container"
+            docker run -d --name trufflehog-runner --user root python:3.9-slim tail -f /dev/null
+
+            echo "Creating a scan directory in container"
+            docker exec trufflehog-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." trufflehog-runner:/scan-target/
+
+            echo "Installing and running TruffleHog inside container"
+            docker exec trufflehog-runner sh -c "
+                cd /scan-target &&
+                apt-get update && apt-get install -y jq &&
+                pip install trufflehog==2.2.1 &&
+                mkdir -p /scan-target/results &&
+
+                # Generate report header
+                cat > /scan-target/results/trufflehog-report.md << EOF
+            # TruffleHog Security Scan Results
+            **Repository:** ${bamboo.planRepository.name}  
+            **Build:** ${bamboo.buildNumber}  
+            **Date:** \$(date)
+
+            ## Findings
+            EOF
+
+                # Run TruffleHog on the filesystem directly (no git required)
+                trufflehog filesystem /scan-target --json 2>/dev/null | jq -c '.' | while read -r line; do
+                    file=\$(echo \"\$line\" | jq -r '.SourceMetadata.Data.RefName // \"Unknown file\"')
+                    reason=\$(echo \"\$line\" | jq -r '.Reason // \"Unknown reason\"')
+                    secret=\$(echo \"\$line\" | jq -r '.Secret // \"No secret found\"')
+
+                    echo \"### Finding in \$file\" >> /scan-target/results/trufflehog-report.md
+                    echo \"* **Reason:** \$reason\" >> /scan-target/results/trufflehog-report.md
+                    echo \"* **Secret:** \$secret\" >> /scan-target/results/trufflehog-report.md
+                    echo \"\" >> /scan-target/results/trufflehog-report.md
+                done
+
+                # Add message if no findings
+                grep -q \"Finding in\" /scan-target/results/trufflehog-report.md || \\
+                echo \"No security issues found.\" >> /scan-target/results/trufflehog-report.md
+            "
+
+            echo "Copying results back to host"
+            docker cp trufflehog-runner:/scan-target/results/. "$RESULTS_DIR/" || echo "No results found"
+
+            echo "TruffleHog scan results:"
+            ls -la "$RESULTS_DIR" || echo "No results directory found"
+            
+            # Display report content for visibility in logs
+            echo "Report contents:"
+            cat "$RESULTS_DIR/trufflehog-report.md" || echo "No report file found"
+
+            echo "Cleaning up container"
+            docker stop trufflehog-runner
+            docker rm trufflehog-runner
+            
+            echo "TruffleHog scan completed successfully"

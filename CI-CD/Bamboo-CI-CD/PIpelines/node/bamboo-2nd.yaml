@@ -1,0 +1,135 @@
+---
+version: 2
+plan:
+  project-key: GER
+  key: BUILD
+  name: React-Site-Build
+
+stages:
+  - Build:
+      jobs:
+        - Build
+  - Test:
+      jobs:
+        - Test
+      manual: false
+      final: false
+
+
+# === BUILD JOB ===
+Build:
+  artifacts:
+    - name: react-app
+      location: build
+      pattern: "**/*"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f node-builder || true
+
+            echo "Starting temporary container"
+            docker run -d --name node-builder node:18-alpine tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." node-builder:/app
+
+            echo "Installing dependencies and building app"
+            docker exec -w /app node-builder sh -c "
+              ls -la &&
+              npm install &&
+              npm run build &&
+              ls -la build
+            "
+
+            echo "Copying build output back to host"
+            mkdir -p build
+            docker cp node-builder:/app/build/. build/
+
+            echo "Cleaning up container"
+            docker stop node-builder
+            docker rm node-builder
+
+
+# === TEST JOB ===
+Test:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - artifact-download:
+        artifacts:
+          - name: react-app
+            destination: build
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f test-runner || true
+
+            echo "Starting test container"
+            docker run -d --name test-runner ubuntu:latest tail -f /dev/null
+
+            echo "Copying build and test script into container"
+            docker cp . test-runner:/app
+
+            echo "Running test script inside container"
+            docker exec -w /app test-runner sh -c "
+              chmod +x tester.sh &&
+              ./tester.sh
+            "
+
+            echo "Cleaning up container"
+            docker stop test-runner
+            docker rm test-runner
+
+---
+version: 2
+
+release-naming:
+  next-version-name: release-1.1
+  applies-to-branches: true
+  auto-increment: true
+
+environments:
+  - deployment
+# === DEPLOY JOB ===
+deployment:
+  name: React-Site-Deployment
+  source-plan: GER-BUILD
+  triggers: 
+    - build-success  
+  tasks:
+    - artifact-download:
+        artifacts:
+          - name: react-app
+            destination: build
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            DEPLOY_USER=${bamboo.DEPLOY_USER_SECRET}
+            DEPLOY_HOST=${bamboo.DEPLOY_HOST_SECRET}
+            
+            echo "Deploying to production server"
+
+            scp -i /gcp_key -o StrictHostKeyChecking=no -r ./build/* $DEPLOY_USER@$DEPLOY_HOST:/home/ubuntu/build
+            
+            ssh -i "/gcp_key" -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST '
+              sudo rm -rf /var/www/html/*
+              sudo mv /home/ubuntu/build/* /var/www/html/
+              sudo systemctl restart nginx
+            '
+            
+            echo "Deployment completed successfully"

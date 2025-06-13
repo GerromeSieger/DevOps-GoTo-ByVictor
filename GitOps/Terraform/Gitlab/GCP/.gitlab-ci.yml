@@ -1,0 +1,89 @@
+# Custom Terraform CI with GCP Workload Identity Federation
+
+stages:
+  - validate
+  - test
+  - plan
+  - apply
+  - cleanup
+
+# SAST scanning for Terraform
+include:
+  - template: Jobs/SAST-IaC.gitlab-ci.yml
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}
+  TF_STATE_NAME: default
+  # Set this to true when you're ready to use Terraform Cloud
+  TF_CLOUD_ENABLED: "true"
+
+# Base configuration for Terraform jobs
+.terraform:
+  image: google/cloud-sdk:slim
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/providers/${WORKLOAD_IDENTITY_PROVIDER_ID}
+  before_script:
+    # Configure GCP Workload Identity Federation
+    - echo "$GITLAB_OIDC_TOKEN" > token.txt
+    - gcloud iam workload-identity-pools create-cred-config "projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/providers/${WORKLOAD_IDENTITY_PROVIDER_ID}" --service-account="${SERVICE_ACCOUNT_EMAIL}" --service-account-token-lifetime-seconds=3600 --output-file="$CI_PROJECT_DIR/credentials.json" --credential-source-file="token.txt" --credential-source-type=text
+    - export GOOGLE_APPLICATION_CREDENTIALS="$CI_PROJECT_DIR/credentials.json"
+    
+    # Install Terraform
+    - apt-get update && apt-get install -y wget unzip
+    - wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+    - unzip terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+    
+    # Configure Terraform Cloud authentication
+    - |
+      if [ "$TF_CLOUD_ENABLED" = "true" ]; then
+        mkdir -p ~/.terraform.d
+        echo '{"credentials":{"app.terraform.io":{"token":"'"${TF_API_TOKEN}"'"}}}' > ~/.terraform.d/credentials.tfrc.json
+      fi
+    
+    # Navigate to Terraform directory
+    - cd ${TF_ROOT}
+    - terraform --version
+
+fmt:
+  extends: .terraform
+  stage: validate
+  script:
+    - terraform fmt -check -recursive
+  allow_failure: true
+  needs: []
+
+validate:
+  extends: .terraform
+  stage: validate
+  script:
+    - terraform init
+    - terraform validate
+  needs: []
+
+plan:
+  extends: .terraform
+  stage: plan
+  script:
+    - terraform init
+    - terraform plan -out=plan.tfplan -var="project_id=$GCP_PROJECT_ID"
+  artifacts:
+    paths:
+      - ${TF_ROOT}/plan.tfplan
+    expire_in: 1 week
+  environment:
+    name: $TF_STATE_NAME
+    action: prepare
+
+apply:
+  extends: .terraform
+  stage: apply
+  script:
+    - terraform init
+    - terraform apply -auto-approve plan.tfplan 
+  dependencies:
+    - plan
+  environment:
+    name: $TF_STATE_NAME
+    action: start
+ # when: manual

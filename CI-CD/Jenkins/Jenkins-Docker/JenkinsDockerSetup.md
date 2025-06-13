@@ -52,11 +52,9 @@ RUN apt update && apt install -y \
 ### 4. Create docker-compose.yml:
 
 ```docker
-version: '3'
-
 services:
   jenkins:
-    image: jenkins/jenkins:lts
+    image: jenkins/jenkins
     container_name: jenkins
     user: root
     privileged: true

@@ -1,0 +1,56 @@
+pipelines:
+  branches:
+    main:
+      - step:
+          name: Test
+          services:
+            - docker
+          script:
+            - export DOCKER_TAG=${BITBUCKET_COMMIT:0:7}          
+            - apt-get update
+            - apt-get install -y curl
+            - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            - docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            - trivy image --format json -o trivy-results.json $DOCKER_IMAGE:$DOCKER_TAG
+            - trivy image --format table -o trivy-results.txt $DOCKER_IMAGE:$DOCKER_TAG
+          artifacts:
+            - trivy-results.json
+            - trivy-results.txt
+          allow_failure: true
+
+      - step:
+          name: Build
+          services:
+            - docker
+          script:
+            - export DOCKER_TAG=${BITBUCKET_COMMIT:0:7}
+            - docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD
+            - docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            - docker push $DOCKER_IMAGE:$DOCKER_TAG
+            - echo "DOCKER_TAG=$DOCKER_TAG" >> variables.env
+          artifacts:
+            - variables.env
+            
+      - step:
+          name: Deploy
+          script:
+            - source variables.env
+            - pipe: atlassian/ssh-run:0.4.0
+              variables:
+                SSH_USER: $USER
+                SERVER: $HOST
+                COMMAND: |                                  
+                  echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+    
+                  if docker ps -q --filter name=$DOCKER_CONTAINER_NAME; then
+                    docker ps -q --filter name=$DOCKER_CONTAINER_NAME | xargs docker stop
+                    docker ps -aq --filter name=$DOCKER_CONTAINER_NAME | xargs docker rm
+                  fi
+                  
+                  docker pull $DOCKER_IMAGE:$DOCKER_TAG
+          
+                  docker run -d \
+                    --name $DOCKER_CONTAINER_NAME \
+                    -p $CONTAINER_PORT:$HOST_PORT \
+                    --restart unless-stopped \
+                    $DOCKER_IMAGE:$DOCKER_TAG

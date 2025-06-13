@@ -1,0 +1,104 @@
+version: 2
+plan:
+  project-key: GER
+  key: BUILD
+  name: Docker-GKE-Workflow
+
+stages:
+  - Build-Docker:
+      jobs:
+        - Build-Docker-Image
+
+# === BUILD DOCKER IMAGE JOB ===
+Build-Docker-Image:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            DOCKERHUB_USERNAME=${bamboo.DOCKERHUB_USERNAME_SECRET}
+            DOCKERHUB_PASSWORD=${bamboo.DOCKERHUB_PASSWORD}
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+
+            # Get commit SHA for tagging
+            COMMIT_SHA=${bamboo.repository.revision.number}
+            
+            echo "Logging into Docker Hub"
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            
+            echo "Building Docker image"
+            docker build -t $DOCKER_IMAGE:$COMMIT_SHA .
+            
+            echo "Pushing Docker image to registry"
+            docker push $DOCKER_IMAGE:$COMMIT_SHA
+
+---
+version: 2
+
+release-naming:
+  next-version-name: release-1.1
+  applies-to-branches: true
+  auto-increment: true
+
+environments:
+  - deployment
+# === DEPLOY WITH ARGOCD JOB ===
+deployment:
+  name: ArgoCD-Deployment
+  source-plan: GER-BUILD
+  triggers: 
+    - build-success 
+  tasks:
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            K8S_MANIFEST_REPO=${bamboo.K8S_MANIFEST_REPO_SECRET}
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+            COMMIT_SHA=${bamboo.repository.revision.number}
+
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f argo-deploy || true
+
+            echo "Starting deployment container..."
+            docker run -d --name argo-deploy ubuntu:22.04 tail -f /dev/null
+            
+            echo "Cloning Kubernetes manifest repo..."
+            docker exec argo-deploy sh -c "
+              cd / &&
+              apt update &&
+              apt install git -y &&
+              git clone ${K8S_MANIFEST_REPO} k8s-manifests
+            "
+
+            echo "Updating image tag in app.yml..."
+            docker exec argo-deploy sh -c '
+              cd /k8s-manifests &&
+              sed -i "s|^\( *image: *\).*$|\1'"${DOCKER_IMAGE}:${COMMIT_SHA}"'|" app.yml
+            '
+
+            echo "Committing and pushing updated manifest..."
+            docker exec argo-deploy sh -c '
+              cd /k8s-manifests &&
+              git config user.name "Bamboo CI" &&
+              git config user.email "bamboo-ci@example.com" &&
+              if [ -n "$(git status -s)" ]; then
+                echo "Changes detected. Committing and pushing..."
+                git add .
+                git commit -m "Update image tag to ${DOCKER_TAG}"
+                git push origin main
+              else
+                echo "No changes detected in Kubernetes manifests."
+              fi
+            '
+
+            echo "Cleaning up container"
+            docker stop argo-deploy
+            docker rm argo-deploy            

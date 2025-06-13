@@ -1,0 +1,47 @@
+services:
+  runner-1:
+    image: myoung34/github-runner:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+      - runner-envs/runner-1.env
+    environment:
+      - REPO_URL=${GITHUB_REPO_URL:-}
+      - ORG_NAME=${GITHUB_ORG_NAME:-}
+      - LABELS=${LABELS_COMMON_1}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-1-data:${RUNNER_WORKDIR:-/tmp/runner-1-workdir}
+
+  runner-2:
+    image: myoung34/github-runner:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+      - runner-envs/runner-2.env
+    environment:
+      - REPO_URL=${GITHUB_REPO_URL:-}
+      - ORG_NAME=${GITHUB_ORG_NAME:-}
+      - LABELS=${LABELS_COMMON_2}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-2-data:${RUNNER_WORKDIR:-/tmp/runner-2-workdir}
+
+  runner-3:
+    image: myoung34/github-runner:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+      - runner-envs/runner-3.env
+    environment:
+      - REPO_URL=${GITHUB_REPO_URL:-}
+      - ORG_NAME=${GITHUB_ORG_NAME:-}
+      - LABELS=${LABELS_COMMON_3}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-3-data:${RUNNER_WORKDIR:-/tmp/runner-3-workdir}
+
+volumes:
+  runner-1-data:
+  runner-2-data:
+  runner-3-data:

@@ -1,0 +1,792 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: All-In-One
+
+stages:
+  - Test:
+      jobs:
+        - Trivy-Scan
+        - GG-Scan
+        - Sonar-Scan
+        - Code-Scan
+        - Container-Scan
+        - Checkov-Scan
+        - TruffleHog-Scan
+  - Build-Docker:
+      jobs:
+        - Build-Docker-Image-Artifact-GCP
+        - Build-Docker-Image
+  - Deploy-Docker:
+      jobs:
+        - Deploy-Docker-Container-CloudRun
+        - Deploy-Docker-Container
+        - Deploy-To-GKE
+        - Deploy-ArgoCD
+
+# === TRIVY SCAN JOB ===
+Trivy-Scan:
+  artifacts:
+    - name: trivy-results
+      location: .
+      pattern: "trivy-results.json"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f trivy-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name trivy-runner -v /var/run/docker.sock:/var/run/docker.sock docker:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" trivy-runner:/app
+
+            echo "Running Trivy scanner inside container"
+            docker exec trivy-runner sh -c "
+                apk add --no-cache curl &&
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin &&
+                cd /app &&
+                docker build -t myapp:image . &&
+                trivy image --format json -o trivy-results.json myapp:image
+            "
+
+            echo "Copying trivy result output back to host"
+            docker cp trivy-runner:/app/trivy-results.json .
+
+            echo "Cleaning up container"
+            docker stop trivy-runner
+            docker rm trivy-runner
+
+            echo "Trivy scan completed successfully"
+
+# === GIT GUARDIAN SCAN JOB ===
+GG-Scan:
+  artifacts:
+    - name: ggshield-results
+      location: .
+      pattern: "ggshield_report*.json"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gg-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name gg-runner gitguardian/ggshield:latest tail -f /dev/null
+
+            echo "Creating a fresh directory in container"
+            docker exec gg-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." gg-runner:/scan-target/
+
+            echo "Running Git Guardian scanner inside container"
+            docker exec gg-runner sh -c "
+                export GITGUARDIAN_API_KEY=\"${bamboo.GITGUARDIAN_API_KEY_SECRET}\" &&
+                # Set HOME explicitly to avoid Git permission issues
+                export HOME=/tmp/home &&
+                mkdir -p \$HOME &&
+                cd /scan-target &&
+                # Initialize a new git repository to avoid issues with the copied repo
+                rm -rf .git &&
+                git init &&
+                git config --global --add safe.directory /scan-target &&
+                # Add files to make sure Git sees them
+                git add . &&
+                # Create a dummy commit to ensure Git metadata exists
+                git config --global user.email \"pipeline@example.com\" &&
+                git config --global user.name \"Bamboo Pipeline\" &&
+                git commit -m \"Temporary commit for scanning\" --allow-empty &&
+
+                echo \"Attempting scan method 1: direct path scan\" &&
+                ggshield secret scan path -y --json --show-secrets --recursive . > /scan-target/ggshield_report_path.json || \
+                (echo \"Attempting scan method 2: repo scan\" && \
+                 ggshield secret scan repo -y --json --show-secrets --recursive . > /scan-target/ggshield_report_repo.json) || \
+                (echo \"Attempting scan method 3: with SCAN_GIT_IGNORE bypass\" && \
+                 GITGUARDIAN_DONT_USE_GIT=true ggshield secret scan path -y --json --show-secrets --recursive . > /scan-target/ggshield_report_bypass.json)
+                
+                # Debug output - list any generated report files
+                echo \"Generated report files:\" &&
+                find /scan-target -name \"ggshield_report*.json\" || echo \"No report files found\"
+            "
+
+            # Copy each possible report file individually to avoid glob pattern issues
+            echo "Attempting to copy report files individually"
+            docker cp gg-runner:/scan-target/ggshield_report_path.json . || echo "No path report found"
+            docker cp gg-runner:/scan-target/ggshield_report_repo.json . || echo "No repo report found"
+            docker cp gg-runner:/scan-target/ggshield_report_bypass.json . || echo "No bypass report found"
+
+            echo "Cleaning up container"
+            docker stop gg-runner
+            docker rm gg-runner
+
+            echo "Git Guardian scan completed successfully"
+
+# === SONAR SCAN JOB ===
+Sonar-Scan:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            # Define Bamboo variables
+            SONAR_PROJECT_KEY=${bamboo.SONAR_PROJECT_KEY_SECRET}
+            SONAR_HOST_URL=${bamboo.SONAR_HOST_URL_SECRET}
+            SONAR_TOKEN=${bamboo.SONAR_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f sonar-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name sonar-runner sonarsource/sonar-scanner-cli:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" sonar-runner:/usr/src
+
+            echo "Running Sonar scanner inside container"
+            docker exec sonar-runner \
+              sh -c "sonar-scanner \
+                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                -Dsonar.sources=/usr/src \
+                -Dsonar.host.url=${SONAR_HOST_URL} \
+                -Dsonar.login=${SONAR_TOKEN}"
+
+            echo "Cleaning up container"
+            docker stop sonar-runner
+            docker rm sonar-runner
+
+            echo "Sonar scan completed successfully"
+
+# === CODE SCAN JOB ===
+Code-Scan:
+  artifacts:
+    - name: snyk-code-results
+      location: .
+      pattern: "snyk-code-results.json"
+      shared: true
+
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            SNYK_TOKEN=${bamboo.SNYK_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f snyk-runner || true
+
+            echo "Starting Snyk runner container..."
+            docker run -d --name snyk-runner -v /var/run/docker.sock:/var/run/docker.sock node:18-slim tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" snyk-runner:/usr/src
+
+            echo "Installing dependencies inside container..."
+            docker exec snyk-runner sh -c "
+              apt-get update && \\
+              apt-get install -y ca-certificates && \\
+              npm install -g snyk@latest
+            "
+
+            echo "Authenticating Snyk CLI..."
+            docker exec snyk-runner sh -c "
+              snyk auth $SNYK_TOKEN
+            "
+
+            echo "Running Snyk Code Scan..."
+            docker exec snyk-runner sh -c "
+              cd /usr/src && \\
+              snyk code test --severity-threshold=high --json-file-output=snyk-code-results.json || true
+            "
+
+            echo "Ensuring JSON file exists even if no issues found..."
+            docker exec snyk-runner sh -c "
+              test -f /usr/src/snyk-code-results.json || echo '{}' > /usr/src/snyk-code-results.json
+            "
+
+            echo "Copying results back to host..."
+            docker cp snyk-runner:/usr/src/snyk-code-results.json .
+
+            echo "Cleaning up container"
+            docker stop snyk-runner
+            docker rm snyk-runner
+
+            echo "Code scan completed!"
+
+# === CONTAINER SCAN JOB ===
+Container-Scan:
+  artifacts:
+    - name: snyk-dockerfile-results
+      location: .
+      pattern: "snyk-dockerfile-results.json"
+      shared: true
+    - name: snyk-image-results
+      location: .
+      pattern: "snyk-image-results.json"
+      shared: true
+
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            SNYK_TOKEN=${bamboo.SNYK_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f snyk-container-runner || true
+
+            echo "Starting Docker container runner..."
+            docker run -d --name snyk-container-runner -v /var/run/docker.sock:/var/run/docker.sock --privileged docker:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" snyk-container-runner:/usr/src
+
+            echo "Installing dependencies inside container..."
+            docker exec snyk-container-runner sh -c "
+              apk add --no-cache nodejs npm && \\
+              npm install -g snyk@latest
+            "
+
+            echo "Authenticating Snyk CLI..."
+            docker exec snyk-container-runner sh -c "
+              snyk auth $SNYK_TOKEN
+            "
+
+            echo "Building Docker image..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              docker build -t myapp:latest .
+            "
+
+            echo "Ensuring Docker image exists..."
+            docker exec snyk-container-runner sh -c "
+              docker inspect myapp:latest > /dev/null 2>&1 || { echo 'Docker image myapp:latest does not exist'; exit 1; }
+            "
+
+            echo "Running Snyk Dockerfile scan..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              snyk container test --file=Dockerfile --severity-threshold=high --json-file-output=snyk-dockerfile-results.json || true && \\
+              snyk container test --file=Dockerfile --severity-threshold=high --sarif-file-output=snyk-dockerfile-results.sarif || true
+            "
+
+            echo "Running Snyk container image scan..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              docker images myapp:latest --format '{{.Repository}}:{{.Tag}}' | xargs -I{} snyk container test {} --severity-threshold=high --json-file-output=snyk-image-results.json || true && \\
+              docker images myapp:latest --format '{{.Repository}}:{{.Tag}}' | xargs -I{} snyk container test {} --severity-threshold=high --sarif-file-output=snyk-image-results.sarif || true
+            "
+
+            echo "Ensuring result files exist even if no issues found..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              test -f snyk-dockerfile-results.json || echo '{}' > snyk-dockerfile-results.json && \\
+              test -f snyk-image-results.json || echo '{}' > snyk-image-results.json
+            "
+
+            echo "Copying results back to host..."
+            docker cp snyk-container-runner:/usr/src/snyk-dockerfile-results.json .
+            docker cp snyk-container-runner:/usr/src/snyk-image-results.json .
+
+            echo "Cleaning up container"
+            docker stop snyk-container-runner
+            docker rm snyk-container-runner
+
+            echo "Container scan completed!"
+
+# === CHECKOV SCAN JOB ===
+Checkov-Scan:
+  artifacts:
+    - name: checkov-results
+      location: results
+      pattern: "*.sarif"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f checkov-runner || true
+
+            echo "Creating results directory"
+            RESULTS_DIR="${bamboo.build.working.directory}/results"
+            mkdir -p "$RESULTS_DIR"
+
+            echo "Starting temporary container"
+            docker run -d --name checkov-runner python:3.11-slim tail -f /dev/null
+
+            echo "Creating a scan directory in container"
+            docker exec checkov-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." checkov-runner:/scan-target/
+
+            echo "Installing and running Checkov inside container"
+            docker exec checkov-runner sh -c "
+                cd /scan-target &&
+                pip install checkov &&
+                echo 'Running Checkov scan...' &&
+                mkdir -p /scan-target/results &&
+                checkov -d . \
+                  --framework terraform,cloudformation,kubernetes,dockerfile,helm \
+                  --soft-fail \
+                  --quiet \
+                  --output sarif > /scan-target/results/checkov-output.sarif 2>&1 || echo 'Checkov completed with findings'
+            "
+
+            echo "Copying results back to host"
+            docker cp checkov-runner:/scan-target/results/. "$RESULTS_DIR/" || echo "No results found"
+
+            echo "Checkov scan results:"
+            ls -la "$RESULTS_DIR" || echo "No results directory found"
+
+            echo "Cleaning up container"
+            docker stop checkov-runner
+            docker rm checkov-runner
+            
+            echo "Checkov scan completed successfully"
+
+# === TRUFFLEHOG SCAN JOB ===
+TruffleHog-Scan:
+  artifacts:
+    - name: trufflehog-results
+      location: results
+      pattern: "*.md"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f trufflehog-runner || true
+
+            echo "Creating results directory"
+            RESULTS_DIR="${bamboo.build.working.directory}/results"
+            mkdir -p "$RESULTS_DIR"
+
+            echo "Starting temporary container"
+            docker run -d --name trufflehog-runner --user root python:3.9-slim tail -f /dev/null
+
+            echo "Creating a scan directory in container"
+            docker exec trufflehog-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." trufflehog-runner:/scan-target/
+
+            echo "Installing and running TruffleHog inside container"
+            docker exec trufflehog-runner sh -c "
+                cd /scan-target &&
+                apt-get update && apt-get install -y jq &&
+                pip install trufflehog==2.2.1 &&
+                mkdir -p /scan-target/results &&
+
+                # Generate report header
+                cat > /scan-target/results/trufflehog-report.md << EOF
+            # TruffleHog Security Scan Results
+            **Repository:** ${bamboo.planRepository.name}  
+            **Build:** ${bamboo.buildNumber}  
+            **Date:** \$(date)
+
+            ## Findings
+            EOF
+
+                # Run TruffleHog on the filesystem directly (no git required)
+                trufflehog filesystem /scan-target --json 2>/dev/null | jq -c '.' | while read -r line; do
+                    file=\$(echo \"\$line\" | jq -r '.SourceMetadata.Data.RefName // \"Unknown file\"')
+                    reason=\$(echo \"\$line\" | jq -r '.Reason // \"Unknown reason\"')
+                    secret=\$(echo \"\$line\" | jq -r '.Secret // \"No secret found\"')
+
+                    echo \"### Finding in \$file\" >> /scan-target/results/trufflehog-report.md
+                    echo \"* **Reason:** \$reason\" >> /scan-target/results/trufflehog-report.md
+                    echo \"* **Secret:** \$secret\" >> /scan-target/results/trufflehog-report.md
+                    echo \"\" >> /scan-target/results/trufflehog-report.md
+                done
+
+                # Add message if no findings
+                grep -q \"Finding in\" /scan-target/results/trufflehog-report.md || \\
+                echo \"No security issues found.\" >> /scan-target/results/trufflehog-report.md
+            "
+
+            echo "Copying results back to host"
+            docker cp trufflehog-runner:/scan-target/results/. "$RESULTS_DIR/" || echo "No results found"
+
+            echo "TruffleHog scan results:"
+            ls -la "$RESULTS_DIR" || echo "No results directory found"
+            
+            # Display report content for visibility in logs
+            echo "Report contents:"
+            cat "$RESULTS_DIR/trufflehog-report.md" || echo "No report file found"
+
+            echo "Cleaning up container"
+            docker stop trufflehog-runner
+            docker rm trufflehog-runner
+            
+            echo "TruffleHog scan completed successfully"
+
+# === BUILD JOB ===
+Build-Docker-Image-Artifact-GCP:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            GCP_REGION="us-central1"
+            SERVICE_NAME="my-application"
+            GCP_REPOSITORY="container-images"
+            GCP_PROJECT_ID="${bamboo.GCP_PROJECT_ID_SECRET}"
+            GCP_CLIENT_ID="${bamboo.GCP_CLIENT_ID_SECRET}"
+            GCP_REFRESH_TOKEN="${bamboo.GCP_REFRESH_TOKEN_SECRET}"
+            DOCKER_TAG="${bamboo.repository.revision.number}"
+
+            DOCKER_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}"
+            DOCKER_FULL_TAG="${DOCKER_IMAGE}:${DOCKER_TAG}"
+            DOCKER_LATEST_TAG="${DOCKER_IMAGE}:latest"
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gcloud-runner || true
+
+            echo "Starting gcloud container..."
+            docker run -d --name gcloud-runner \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine tail -f /dev/null
+
+            echo "Copying source code into container..."
+            docker cp "${bamboo.build.working.directory}" gcloud-runner:/app
+
+            echo "Installing Docker CLI and authenticating to GCP..."
+            docker exec gcloud-runner sh -c "
+              apk add --no-cache docker-cli &&
+              gcloud auth activate-refresh-token \"${GCP_CLIENT_ID}\" \"${GCP_REFRESH_TOKEN}\" &&
+              gcloud config set project \"${GCP_PROJECT_ID}\" &&
+              gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+            "
+
+            echo "Creating repository if it doesn't exist..."
+            docker exec gcloud-runner sh -c "
+              gcloud artifacts repositories describe ${GCP_REPOSITORY} --location=${GCP_REGION} || \
+              gcloud artifacts repositories create ${GCP_REPOSITORY} \
+                --repository-format=docker \
+                --location=${GCP_REGION}
+            "
+
+            echo "Building Docker image inside container..."
+            docker exec gcloud-runner sh -c "
+              docker build -t \"${DOCKER_FULL_TAG}\" /app
+            "
+
+            echo "Tagging as latest..."
+            docker exec gcloud-runner sh -c "
+              docker tag \"${DOCKER_FULL_TAG}\" \"${DOCKER_LATEST_TAG}\"
+            "
+
+            echo "Pushing Docker image to GCP Artifact Registry..."
+            docker exec gcloud-runner sh -c "
+              docker push \"${DOCKER_FULL_TAG}\" &&
+              docker push \"${DOCKER_LATEST_TAG}\"
+            "
+
+            echo "Cleaning up container"
+            docker stop gcloud-runner
+            docker rm gcloud-runner
+
+            echo "Build and push completed successfully!"
+
+# === BUILD DOCKER IMAGE JOB ===
+Build-Docker-Image:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            DOCKERHUB_USERNAME=${bamboo.DOCKERHUB_USERNAME_SECRET}
+            DOCKERHUB_PASSWORD=${bamboo.DOCKERHUB_PASSWORD}
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+
+            # Get commit SHA for tagging
+            COMMIT_SHA=${bamboo.repository.revision.number}
+            
+            echo "Logging into Docker Hub"
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            
+            echo "Building Docker image"
+            docker build -t $DOCKER_IMAGE:$COMMIT_SHA .
+            
+            echo "Pushing Docker image to registry"
+            docker push $DOCKER_IMAGE:$COMMIT_SHA
+
+# === DEPLOY JOB ===
+Deploy-Docker-Container-CloudRun:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            GCP_REGION="us-central1"
+            SERVICE_NAME="my-application"
+            GCP_REPOSITORY="container-images"
+            GCP_PROJECT_ID="${bamboo.GCP_PROJECT_ID_SECRET}"
+            GCP_CLIENT_ID="${bamboo.GCP_CLIENT_ID_SECRET}"
+            GCP_REFRESH_TOKEN="${bamboo.GCP_REFRESH_TOKEN_SECRET}"
+            DOCKER_TAG="${bamboo.repository.revision.number}"
+
+            DOCKER_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}"
+            DOCKER_FULL_TAG="${DOCKER_IMAGE}:${DOCKER_TAG}"
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gcloud-deploy || true
+
+            echo "Starting deployment container..."
+            docker run -d --name gcloud-deploy ubuntu:22.04 tail -f /dev/null
+
+            echo "Installing dependencies and Google Cloud SDK..."
+            docker exec gcloud-deploy sh -c "
+              apt update && \\
+              apt install -y apt-transport-https ca-certificates gnupg curl && \\
+              curl https://packages.cloud.google.com/apt/doc/apt-key.gpg  | apt-key add - && \\
+              echo 'deb https://packages.cloud.google.com/apt  cloud-sdk main' > /etc/apt/sources.list.d/google-cloud-sdk.list && \\
+              apt update && \\
+              apt install -y google-cloud-sdk
+            "
+
+            echo "Authenticating to GCP..."
+            docker exec gcloud-deploy sh -c "
+              gcloud auth activate-refresh-token \"${GCP_CLIENT_ID}\" \"${GCP_REFRESH_TOKEN}\" && \\
+              gcloud config set project \"${GCP_PROJECT_ID}\"
+            "
+
+            echo "Deploying to Cloud Run..."
+            docker exec gcloud-deploy sh -c "
+              gcloud run deploy ${SERVICE_NAME} \\
+                --image=${DOCKER_FULL_TAG} \\
+                --region=${GCP_REGION} \\
+                --platform=managed \\
+                --memory=512Mi \\
+                --cpu=1 \\
+                --min-instances=0 \\
+                --max-instances=10 \\
+                --concurrency=80 \\
+                --timeout=300s \\
+                --port=80 \\
+                --quiet
+            "
+
+            echo "Cleaning up container"
+            docker stop gcloud-deploy
+            docker rm gcloud-deploy
+
+# === DEPLOY DOCKER CONTAINER JOB ===
+Deploy-Docker-Container:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            DOCKERHUB_USERNAME=${bamboo.DOCKERHUB_USERNAME_SECRET}
+            DOCKERHUB_PASSWORD=${bamboo.DOCKERHUB_PASSWORD}
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+            DOCKER_CONTAINER_NAME=react-app
+            CONTAINER_PORT=3000
+            HOST_PORT=80
+            DEPLOY_USER=${bamboo.DEPLOY_USER_SECRET}
+            DEPLOY_HOST=${bamboo.DEPLOY_HOST_SECRET}
+            COMMIT_SHA=${bamboo.repository.revision.number}
+            
+            echo "Deploying to production server"
+            
+            ssh -i "/gcp_key" -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST "
+            
+            set -e
+
+              echo 'Logging into Docker Hub...'
+              echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+              echo 'Cleaning up old containers...'
+              if docker ps -q --filter name=${DOCKER_CONTAINER_NAME} | grep -q .; then
+                docker ps -q --filter name=${DOCKER_CONTAINER_NAME} | xargs docker stop
+              fi
+
+              if docker ps -aq --filter name=${DOCKER_CONTAINER_NAME} | grep -q .; then
+                docker ps -aq --filter name=${DOCKER_CONTAINER_NAME} | xargs docker rm
+              fi
+
+              echo 'Pulling new image: ${DOCKER_IMAGE}:${COMMIT_SHA}'
+              docker pull ${DOCKER_IMAGE}:${COMMIT_SHA}
+
+              echo 'Running new container...'
+              docker run -d \
+                --name ${DOCKER_CONTAINER_NAME} \
+                -p ${HOST_PORT}:${CONTAINER_PORT} \
+                --restart unless-stopped \
+                ${DOCKER_IMAGE}:${COMMIT_SHA}
+            "
+            
+            echo "Deployment completed successfully"
+
+# === DEPLOY TO GKE JOB ===
+Deploy-To-GKE:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            GCP_PROJECT_ID="${bamboo.GCP_PROJECT_ID_SECRET}"
+            GCP_CLIENT_ID="${bamboo.GCP_CLIENT_ID_SECRET}"
+            GCP_REFRESH_TOKEN="${bamboo.GCP_REFRESH_TOKEN_SECRET}"
+            GKE_CLUSTER_NAME="${bamboo.GKE_CLUSTER_NAME_SECRET}"
+            GKE_CLUSTER_ZONE="${bamboo.GKE_CLUSTER_ZONE_SECRET}"            
+            DOCKER_TAG="${bamboo.repository.revision.number}"
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gcloud-deploy || true
+
+            echo "Starting deployment container..."
+            docker run -d --name gcloud-deploy ubuntu:22.04 tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" gcloud-deploy:/app
+
+            echo "Installing dependencies and Google Cloud SDK..."
+            docker exec gcloud-deploy sh -c "
+              apt update && \\
+              apt install -y apt-transport-https ca-certificates gnupg curl && \\
+              curl https://packages.cloud.google.com/apt/doc/apt-key.gpg  | apt-key add - && \\
+              echo 'deb https://packages.cloud.google.com/apt  cloud-sdk main' > /etc/apt/sources.list.d/google-cloud-sdk.list && \\
+              apt update && \\
+              apt install -y google-cloud-sdk google-cloud-sdk-gke-gcloud-auth-plugin kubectl git
+            "
+
+            echo "Authenticating to GCP and Authenticate with GKE..."
+            docker exec gcloud-deploy sh -c "
+              gcloud auth activate-refresh-token \"${GCP_CLIENT_ID}\" \"${GCP_REFRESH_TOKEN}\" && \\
+              gcloud config set project \"${GCP_PROJECT_ID}\"
+              gcloud container clusters get-credentials "${GKE_CLUSTER_NAME}" --zone "${GKE_CLUSTER_ZONE}" 
+            "
+
+            echo "Confirm Authentication..."
+            docker exec gcloud-deploy sh -c "
+              kubectl get nodes
+            "
+
+            echo "Deploying K8s Manifests..."
+            docker exec gcloud-deploy sh -c '
+              cd /app/k8s &&
+              sed -i "s|^\( *image: *\).*$|\1'"${DOCKER_IMAGE}:${DOCKER_TAG}"'|" app.yml &&
+              kubectl apply -f .
+            '
+
+            echo "Cleaning up container"
+            docker stop gcloud-deploy
+            docker rm gcloud-deploy
+
+# === DEPLOY WITH ARGOCD JOB ===
+Deploy-ArgoCD:
+  tasks:
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            K8S_MANIFEST_REPO=${bamboo.K8S_MANIFEST_REPO_SECRET}
+            DOCKER_IMAGE=${bamboo.DOCKER_IMAGE_SECRET}
+            COMMIT_SHA=${bamboo.repository.revision.number}
+
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f argo-deploy || true
+
+            echo "Starting deployment container..."
+            docker run -d --name argo-deploy ubuntu:22.04 tail -f /dev/null
+            
+            echo "Cloning Kubernetes manifest repo..."
+            docker exec argo-deploy sh -c "
+              cd / &&
+              apt update &&
+              apt install git -y &&
+              git clone ${K8S_MANIFEST_REPO} k8s-manifests
+            "
+
+            echo "Updating image tag in app.yml..."
+            docker exec argo-deploy sh -c '
+              cd /k8s-manifests &&
+              sed -i "s|^\( *image: *\).*$|\1'"${DOCKER_IMAGE}:${COMMIT_SHA}"'|" app.yml
+            '
+
+            echo "Committing and pushing updated manifest..."
+            docker exec argo-deploy sh -c '
+              cd /k8s-manifests &&
+              git config user.name "Bamboo CI" &&
+              git config user.email "bamboo-ci@example.com" &&
+              if [ -n "$(git status -s)" ]; then
+                echo "Changes detected. Committing and pushing..."
+                git add .
+                git commit -m "Update image tag to ${DOCKER_TAG}"
+                git push origin main
+              else
+                echo "No changes detected in Kubernetes manifests."
+              fi
+            '
+
+            echo "Cleaning up container"
+            docker stop argo-deploy
+            docker rm argo-deploy            

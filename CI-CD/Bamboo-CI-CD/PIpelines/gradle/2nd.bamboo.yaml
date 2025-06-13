@@ -1,0 +1,53 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Gradle_Build
+
+stages:
+  - Build:
+      jobs:
+        - Gradle-Build-Job
+
+Gradle-Build-Job:
+  artifacts:
+    - name: build-artifacts
+      location: build/libs
+      pattern: "**/*"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up any previous container"
+            docker rm -f gradle-builder || true
+
+            echo "Starting Docker container for Gradle build"
+            docker run -d --name gradle-builder gradle:7.4-jdk17 tail -f /dev/null
+
+            echo "Copying source files into the container"
+            docker cp "${bamboo.build.working.directory}" gradle-builder:/app
+
+            echo "Setting environment variables"
+            export GRADLE_OPTS="-Dorg.gradle.daemon=false"
+
+            echo "Running Gradle build process"
+            docker exec gradle-builder sh -c "
+              cd /app &&
+              export GRADLE_OPTS='-Dorg.gradle.daemon=false' && \\
+              ./gradlew build
+            "
+
+            echo "Copying build artifacts back to host"
+            docker cp gradle-builder:/app/build "${bamboo.build.working.directory}" || echo "No build directory found"
+
+            echo "Stopping and cleaning up container"
+            docker stop gradle-builder
+            docker rm gradle-builder
+
+            echo "Gradle build completed successfully"

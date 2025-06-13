@@ -1,0 +1,49 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: React-Sonar-Scan
+
+stages:
+  - Analyze:
+      jobs:
+        - Sonar-Scan
+
+# === SONAR SCAN JOB ===
+Sonar-Scan:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            # Define Bamboo variables
+            SONAR_PROJECT_KEY=${bamboo.SONAR_PROJECT_KEY_SECRET}
+            SONAR_HOST_URL=${bamboo.SONAR_HOST_URL_SECRET}
+            SONAR_TOKEN=${bamboo.SONAR_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f sonar-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name sonar-runner sonarsource/sonar-scanner-cli:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" sonar-runner:/usr/src
+
+            echo "Running Sonar scanner inside container"
+            docker exec sonar-runner \
+              sh -c "sonar-scanner \
+                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                -Dsonar.sources=/usr/src \
+                -Dsonar.host.url=${SONAR_HOST_URL} \
+                -Dsonar.login=${SONAR_TOKEN}"
+
+            echo "Cleaning up container"
+            docker stop sonar-runner
+            docker rm sonar-runner
+
+            echo "Sonar scan completed successfully"

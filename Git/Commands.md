@@ -183,3 +183,20 @@ git branch --merged
 git update-index --assume-unchanged appsettings.Development.json
 ```
 
+- Clone a repository with the access key (github):
+
+```bash
+git clone https://x-access-token:pat_token@github.com/GerromeSieger/GerromeApp.git
+```
+
+- Clone a repository with the access key (gitlab):
+
+```bash
+git clone https://username:pat_token@gitlab.com/GerromeSieger/GerromeApp.git
+```
+
+- Clone a repository with the access key (bitbucket):
+
+```bash
+git clone https://x-token-auth:pat_token@bitbucket.org/gerrome/gerromeapp.git
+```

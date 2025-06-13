@@ -1,0 +1,36 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Ant_Build
+
+stages:
+  - Build:
+      jobs:
+        - Ant-Build-Job
+
+Ant-Build-Job:
+  artifacts:
+    - name: build-artifacts
+      location: build/
+      pattern: "**/*"
+      shared: true
+    - name: dist-artifacts
+      location: dist/
+      pattern: "**/*"
+      shared: true
+    - name: lib-artifacts
+      location: lib/
+      pattern: "**/*"
+      shared: true
+
+  tasks:
+  - any-task:
+      plugin-key: com.atlassian.bamboo.plugins.ant:task.builder.ant
+      configuration:
+        buildFile: antbuild.xml
+        environmentVariables: JAVA_HOME="/opt/java/openjdk"
+        buildJdk: JDK 21
+        label: Ant
+        target: setup-ivy resolve clean build
+  artifact-subscriptions: []

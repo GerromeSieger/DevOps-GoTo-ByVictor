@@ -1,0 +1,42 @@
+pipeline {
+    agent any
+    stages {
+        stage('Security - Checkov Scan') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                }
+            }
+
+            environment {
+                RESULTS_DIR = "${env.WORKSPACE}/results"
+            }        
+            steps {
+                sh '''
+                    pip install checkov
+                    mkdir -p "$RESULTS_DIR"
+                    echo "Running Checkov scan..."
+                    checkov -d . \
+                        --framework terraform,cloudformation,kubernetes,dockerfile,helm \
+                        --soft-fail \
+                        --quiet \
+                        --output sarif > "$RESULTS_DIR/checkov-output.sarif" 2>&1 || echo "Checkov completed with findings"
+                    echo "Scan completed. Results saved to $RESULTS_DIR/checkov-output.sarif"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/checkov-output.sarif', fingerprint: true
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                sh 'docker image prune -f || true'
+                sh 'docker rmi python:3.11-slim || true'
+            }
+        }
+    }
+}

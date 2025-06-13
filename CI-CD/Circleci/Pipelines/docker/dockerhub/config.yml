@@ -1,0 +1,70 @@
+version: 2.1
+
+workflows:
+  version: 2
+  build-test-deploy:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only: main            
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
+
+jobs:
+  build:
+    docker:
+      - image: docker:latest
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build and push
+          command: |
+            DOCKER_TAG=${CIRCLE_SHA1:0:7}
+            echo "Building image: $DOCKER_IMAGE:$DOCKER_TAG"
+            echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+            docker build -t "$DOCKER_IMAGE:$DOCKER_TAG" .
+            docker push "$DOCKER_IMAGE:$DOCKER_TAG"
+
+  deploy:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints:
+            - "${SSH_KEY_FINGERPRINT}"
+      - run:
+          name: Generate Docker Tag
+          command: |
+            echo "export DOCKER_TAG=${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            source $BASH_ENV
+            echo "Generated Docker tag: $DOCKER_TAG"
+      - run:
+          name: Setup SSH and deploy
+          command: |
+            mkdir -p ~/.ssh
+            echo "SendEnv DOCKER_TAG DOCKER_IMAGE DOCKER_CONTAINER_NAME CONTAINER_PORT HOST_PORT" > ~/.ssh/config
+            chmod 600 ~/.ssh/config
+            ssh -o StrictHostKeyChecking=no $USER@$HOST "
+              DOCKER_TAG=${CIRCLE_SHA1:0:7}
+              docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
+              
+              if docker ps -q --filter name=$DOCKER_CONTAINER_NAME; then
+                docker ps -q --filter name=$DOCKER_CONTAINER_NAME | xargs docker stop
+                docker ps -aq --filter name=$DOCKER_CONTAINER_NAME | xargs docker rm
+              fi
+              
+              docker pull $DOCKER_IMAGE:$DOCKER_TAG
+              
+              docker run -d \
+                --name $DOCKER_CONTAINER_NAME \
+                -p $CONTAINER_PORT:$HOST_PORT \
+                --restart unless-stopped \
+                $DOCKER_IMAGE:$DOCKER_TAG
+            "

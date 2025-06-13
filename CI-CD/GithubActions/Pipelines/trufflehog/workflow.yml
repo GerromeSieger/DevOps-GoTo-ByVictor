@@ -1,0 +1,47 @@
+name: TruffleHog Secret Scan
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  trufflehog-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install TruffleHog Binary
+        run: |
+          mkdir -p ~/tools
+          cd ~/tools
+          curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest  \
+            | grep "browser_download_url.*linux_amd64.tar.gz" \
+            | cut -d '"' -f 4 \
+            | wget -qi - \
+            && tar -xvf trufflehog_*.tar.gz \
+            && sudo mv trufflehog /usr/local/bin/
+
+      - name: Verify TruffleHog Version
+        run: |
+          trufflehog --version
+
+      - name: Run TruffleHog Scan (Filesystem Mode)
+        id: trufflehog
+        run: |
+          trufflehog filesystem . --json > trufflehog-results.json || echo "Scan completed"
+
+      - name: Show Results
+        run: |
+          cat trufflehog-results.json
+
+      - name: Upload Scan Results as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-results
+          path: trufflehog-results.json

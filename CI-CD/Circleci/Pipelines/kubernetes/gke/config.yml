@@ -1,0 +1,77 @@
+version: 2.1
+
+workflows:
+  version: 2
+  build-test-deploy:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only: main            
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Generate Docker Tag
+          command: |
+            echo "export DOCKER_TAG=${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            source $BASH_ENV
+            echo $DOCKER_TAG
+      - run:
+          name: Build and push Docker image
+          command: |
+            echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+            docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            docker push $DOCKER_IMAGE:$DOCKER_TAG
+            
+  deploy:
+    docker:
+      - image: ubuntu:22.04
+    steps:
+      - run:
+          name: Install Dependencies
+          command: |
+            apt-get update
+            apt-get install -y apt-transport-https ca-certificates gnupg curl git
+
+            # Add Google Cloud SDK repository
+            echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+            curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+
+            # Install required packages
+            apt-get update
+            apt-get install -y google-cloud-sdk google-cloud-sdk-gke-gcloud-auth-plugin kubectl
+      
+      - run:
+          name: Configure GCloud and Deploy
+          command: |
+            # Configure gcloud with refresh token
+            gcloud auth activate-refresh-token "$GCP_CLIENT_ID" "$GCP_REFRESH_TOKEN"
+            gcloud config set project "$GCP_PROJECT_ID"
+            gcloud container clusters get-credentials "$GKE_CLUSTER_NAME" --zone "$GKE_CLUSTER_ZONE"
+
+            # Verify kubectl configuration
+            kubectl get nodes
+
+            # Deploy Kubernetes resources
+            awk -v image="${DOCKER_IMAGE}:${DOCKER_TAG}" '
+              /image:/ {$0 = "        image: " image}
+              {print}
+            ' app.yml > temp.yml && mv temp.yml app.yml
+
+            if [[ -n $(git status -s) ]]; then
+              kubectl apply -f .
+            else
+              echo "No changes detected in Kubernetes manifests."
+            fi

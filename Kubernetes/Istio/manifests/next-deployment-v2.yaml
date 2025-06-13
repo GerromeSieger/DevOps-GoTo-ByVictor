@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: next-deployment-v2
+  namespace: default
+  labels:
+    app: next
+    tier: frontend
+    version: v2
+spec:
+  replicas: 1  # Start with fewer replicas for the canary
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: next
+      tier: frontend
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: next
+        tier: frontend
+        version: v2
+      annotations:
+        prometheus.io/scrape: "true"
+    spec:
+      containers:
+      - name: nextapp
+        image: gerrome/next-site  # New version of your application
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+      #   livenessProbe:
+      #     httpGet:
+      #       path: /
+      #       port: 80
+      #     initialDelaySeconds: 30
+      #     periodSeconds: 10
+      #   readinessProbe:
+      #     httpGet:
+      #       path: /
+      #       port: 80
+      #     initialDelaySeconds: 5
+      #     periodSeconds: 5
+      #   env:
+      #   - name: NODE_ENV
+      #     value: "production"
+      #   - name: VERSION
+      #     value: "v2"  # Add an environment variable to identify the version
+      # terminationGracePeriodSeconds: 30
+      # affinity:
+      #   podAntiAffinity:
+      #     preferredDuringSchedulingIgnoredDuringExecution:
+      #     - weight: 100
+      #       podAffinityTerm:
+      #         labelSelector:
+      #           matchExpressions:
+      #           - key: app
+      #             operator: In
+      #             values:
+      #             - next
+      #         topologyKey: "kubernetes.io/hostname"

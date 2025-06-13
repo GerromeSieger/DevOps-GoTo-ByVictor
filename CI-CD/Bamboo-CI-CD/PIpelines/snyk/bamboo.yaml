@@ -1,0 +1,156 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Snyk-Scan-Pipeline
+
+stages:
+  - Snyk-Code:
+      jobs:
+        - Code-Scan
+  - Snyk-Container:
+      jobs:
+        - Container-Scan
+
+# === CODE SCAN JOB ===
+Code-Scan:
+  artifacts:
+    - name: snyk-code-results
+      location: .
+      pattern: "snyk-code-results.json"
+      shared: true
+
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            SNYK_TOKEN=${bamboo.SNYK_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f snyk-runner || true
+
+            echo "Starting Snyk runner container..."
+            docker run -d --name snyk-runner -v /var/run/docker.sock:/var/run/docker.sock node:18-slim tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" snyk-runner:/usr/src
+
+            echo "Installing dependencies inside container..."
+            docker exec snyk-runner sh -c "
+              apt-get update && \\
+              apt-get install -y ca-certificates && \\
+              npm install -g snyk@latest
+            "
+
+            echo "Authenticating Snyk CLI..."
+            docker exec snyk-runner sh -c "
+              snyk auth $SNYK_TOKEN
+            "
+
+            echo "Running Snyk Code Scan..."
+            docker exec snyk-runner sh -c "
+              cd /usr/src && \\
+              snyk code test --severity-threshold=high --json-file-output=snyk-code-results.json || true
+            "
+
+            echo "Ensuring JSON file exists even if no issues found..."
+            docker exec snyk-runner sh -c "
+              test -f /usr/src/snyk-code-results.json || echo '{}' > /usr/src/snyk-code-results.json
+            "
+
+            echo "Copying results back to host..."
+            docker cp snyk-runner:/usr/src/snyk-code-results.json .
+
+            echo "Cleaning up container"
+            docker stop snyk-runner
+            docker rm snyk-runner
+
+            echo "Code scan completed!"
+
+# === CONTAINER SCAN JOB ===
+Container-Scan:
+  artifacts:
+    - name: snyk-dockerfile-results
+      location: .
+      pattern: "snyk-dockerfile-results.json"
+      shared: true
+    - name: snyk-image-results
+      location: .
+      pattern: "snyk-image-results.json"
+      shared: true
+
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            SNYK_TOKEN=${bamboo.SNYK_TOKEN_SECRET}
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f snyk-container-runner || true
+
+            echo "Starting Docker container runner..."
+            docker run -d --name snyk-container-runner -v /var/run/docker.sock:/var/run/docker.sock --privileged docker:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" snyk-container-runner:/usr/src
+
+            echo "Installing dependencies inside container..."
+            docker exec snyk-container-runner sh -c "
+              apk add --no-cache nodejs npm && \\
+              npm install -g snyk@latest
+            "
+
+            echo "Authenticating Snyk CLI..."
+            docker exec snyk-container-runner sh -c "
+              snyk auth $SNYK_TOKEN
+            "
+
+            echo "Building Docker image..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              docker build -t myapp:latest .
+            "
+
+            echo "Ensuring Docker image exists..."
+            docker exec snyk-container-runner sh -c "
+              docker inspect myapp:latest > /dev/null 2>&1 || { echo 'Docker image myapp:latest does not exist'; exit 1; }
+            "
+
+            echo "Running Snyk Dockerfile scan..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              snyk container test --file=Dockerfile --severity-threshold=high --json-file-output=snyk-dockerfile-results.json || true && \\
+              snyk container test --file=Dockerfile --severity-threshold=high --sarif-file-output=snyk-dockerfile-results.sarif || true
+            "
+
+            echo "Running Snyk container image scan..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              docker images myapp:latest --format '{{.Repository}}:{{.Tag}}' | xargs -I{} snyk container test {} --severity-threshold=high --json-file-output=snyk-image-results.json || true && \\
+              docker images myapp:latest --format '{{.Repository}}:{{.Tag}}' | xargs -I{} snyk container test {} --severity-threshold=high --sarif-file-output=snyk-image-results.sarif || true
+            "
+
+            echo "Ensuring result files exist even if no issues found..."
+            docker exec -w /usr/src snyk-container-runner sh -c "
+              test -f snyk-dockerfile-results.json || echo '{}' > snyk-dockerfile-results.json && \\
+              test -f snyk-image-results.json || echo '{}' > snyk-image-results.json
+            "
+
+            echo "Copying results back to host..."
+            docker cp snyk-container-runner:/usr/src/snyk-dockerfile-results.json .
+            docker cp snyk-container-runner:/usr/src/snyk-image-results.json .
+
+            echo "Cleaning up container"
+            docker stop snyk-container-runner
+            docker rm snyk-container-runner
+
+            echo "Container scan completed!"

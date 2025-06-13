@@ -1,0 +1,51 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_TAG = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+    }
+    
+    stages {
+        stage('Trivy Scan') {
+            agent {
+                docker {
+                    image 'docker:latest'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u root:root'
+                    reuseNode true
+                }
+            }
+            
+            steps {
+                script {
+                    sh '''
+                        apk add --no-cache curl
+                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+                    '''
+                    
+                    withCredentials([string(credentialsId: 'DOCKER_IMAGE', variable: 'DOCKER_IMAGE')]) {
+                        sh '''
+                            docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                            trivy image --format json -o trivy-results.json ${DOCKER_IMAGE}:${DOCKER_TAG}
+                            trivy image --format table -o trivy-results.txt ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        '''
+                    }
+                    
+                    archiveArtifacts artifacts: 'trivy-results.*', allowEmptyArchive: true
+                }
+            }
+            
+            post {
+                always {
+                    sh 'docker rmi docker:latest --force || true'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            sh 'docker system prune -af || true'
+        }
+    }
+}

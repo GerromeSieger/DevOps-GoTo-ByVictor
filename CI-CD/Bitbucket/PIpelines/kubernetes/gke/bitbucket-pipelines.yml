@@ -1,0 +1,49 @@
+pipelines:
+  branches:
+    main:
+      - step:
+          name: Build
+          services:
+            - docker
+          script:
+            - export DOCKER_TAG=${BITBUCKET_COMMIT:0:7}
+            - docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD
+            - docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            - docker push $DOCKER_IMAGE:$DOCKER_TAG
+            - echo "DOCKER_TAG=$DOCKER_TAG" >> variables.env
+            - echo "DOCKER_IMAGE=$DOCKER_IMAGE" >> variables.env
+          artifacts:
+            - variables.env
+                        
+      - step:
+          name: Deploy to GKE
+          image: ubuntu:22.04
+          deployment: production
+          script:
+            - source variables.env
+            - apt-get update
+            - apt-get install -y apt-transport-https ca-certificates gnupg curl
+            - echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+            - curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+            - apt-get update && apt-get install -y google-cloud-sdk google-cloud-sdk-gke-gcloud-auth-plugin kubectl git
+            
+            # Configure gcloud
+            - gcloud auth activate-refresh-token $GCP_CLIENT_ID $GCP_REFRESH_TOKEN
+            - gcloud config set project $GCP_PROJECT_ID
+            - gcloud container clusters get-credentials $GKE_CLUSTER_NAME --zone $GKE_CLUSTER_ZONE
+            
+            # Verify kubectl configuration
+            - kubectl get nodes
+            
+            # Deploy the Kubernetes resources
+            - |
+              awk -v image="$DOCKER_IMAGE:$DOCKER_TAG" '
+                /image:/ {$0 = "        image: " image}
+                {print}
+              ' k8s/app.yml > temp.yml && mv temp.yml k8s/app.yml
+            - |
+              if [[ -n $(git status -s) ]]; then
+                kubectl apply -f k8s/
+              else
+                echo "No changes detected in Kubernetes manifests."
+              fi

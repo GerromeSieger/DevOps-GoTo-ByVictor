@@ -1,0 +1,98 @@
+version: 2.1
+
+workflows:
+  version: 2
+  build-deploy:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only: main            
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
+
+jobs:
+  build:
+    docker:
+      - image: gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine
+    environment:
+      GCP_REGION: us-central1
+      SERVICE_NAME: my-application
+      GCP_REPOSITORY: container-images
+      DOCKER_IMAGE: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install Docker client
+          command: |
+            apk add --no-cache docker-cli
+      - run:
+          name: Authenticate with Google Cloud
+          command: |
+            gcloud auth activate-refresh-token "$GCP_CLIENT_ID" "$GCP_REFRESH_TOKEN"
+            gcloud config set project "$GCP_PROJECT_ID"
+            gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+      - run:
+          name: Create Artifact Repository if needed
+          command: |
+            gcloud artifacts repositories describe ${GCP_REPOSITORY} --location=${GCP_REGION} || \
+            gcloud artifacts repositories create ${GCP_REPOSITORY} --repository-format=docker --location=${GCP_REGION}
+      - run:
+          name: Build and push Docker image
+          command: |
+            DOCKER_TAG=${CIRCLE_SHA1:0:7}
+            echo "Building image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG}"
+            docker build -t ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} .
+            docker tag ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:latest
+            docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG}
+            docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:latest
+            echo "Successfully pushed image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG}"
+
+  deploy:
+    docker:
+      - image: cimg/base:stable
+    environment:
+      DOCKER_TAG: ${CIRCLE_SHA1}
+      GCP_REGION: us-central1
+      SERVICE_NAME: my-application
+      GCP_REPOSITORY: container-images
+    steps:
+      - checkout
+      - run:
+          name: Install Google Cloud SDK
+          command: |
+            echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+            curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+            sudo apt-get update
+            sudo apt-get install -y google-cloud-sdk
+      - run:
+          name: Authenticate with Google Cloud
+          command: |
+            gcloud auth activate-refresh-token "$GCP_CLIENT_ID" "$GCP_REFRESH_TOKEN"
+            gcloud config set project "$GCP_PROJECT_ID"
+      - run:
+          name: Deploy to Cloud Run
+          command: |
+            DOCKER_TAG=${CIRCLE_SHA1:0:7}
+            gcloud run deploy ${SERVICE_NAME} \
+              --image=${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} \
+              --region=${GCP_REGION} \
+              --platform=managed \
+              --memory=512Mi \
+              --cpu=1 \
+              --min-instances=0 \
+              --max-instances=10 \
+              --concurrency=80 \
+              --timeout=300s \
+              --port=80 \
+              --quiet
+      - run:
+          name: Get deployment URL
+          command: |
+            SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format='value(status.url)')
+            echo "Deployed to: $SERVICE_URL"

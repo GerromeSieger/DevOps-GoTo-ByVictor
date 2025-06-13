@@ -1,0 +1,162 @@
+version: 2
+plan:
+  project-key: GER
+  key: BUILD
+  name: GCP-Artifact
+
+stages:
+  - Build-Docker:
+      jobs:
+        - Build-Docker-Image
+
+# === BUILD JOB ===
+Build-Docker-Image:
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            GCP_REGION="us-central1"
+            SERVICE_NAME="my-application"
+            GCP_REPOSITORY="container-images"
+            GCP_PROJECT_ID="${bamboo.GCP_PROJECT_ID_SECRET}"
+            GCP_CLIENT_ID="${bamboo.GCP_CLIENT_ID_SECRET}"
+            GCP_REFRESH_TOKEN="${bamboo.GCP_REFRESH_TOKEN_SECRET}"
+            DOCKER_TAG="${bamboo.repository.revision.number}"
+
+            DOCKER_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}"
+            DOCKER_FULL_TAG="${DOCKER_IMAGE}:${DOCKER_TAG}"
+            DOCKER_LATEST_TAG="${DOCKER_IMAGE}:latest"
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gcloud-runner || true
+
+            echo "Starting gcloud container..."
+            docker run -d --name gcloud-runner \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine tail -f /dev/null
+
+            echo "Copying source code into container..."
+            docker cp "${bamboo.build.working.directory}" gcloud-runner:/app
+
+            echo "Installing Docker CLI and authenticating to GCP..."
+            docker exec gcloud-runner sh -c "
+              apk add --no-cache docker-cli &&
+              gcloud auth activate-refresh-token \"${GCP_CLIENT_ID}\" \"${GCP_REFRESH_TOKEN}\" &&
+              gcloud config set project \"${GCP_PROJECT_ID}\" &&
+              gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+            "
+
+            echo "Creating repository if it doesn't exist..."
+            docker exec gcloud-runner sh -c "
+              gcloud artifacts repositories describe ${GCP_REPOSITORY} --location=${GCP_REGION} || \
+              gcloud artifacts repositories create ${GCP_REPOSITORY} \
+                --repository-format=docker \
+                --location=${GCP_REGION}
+            "
+
+            echo "Building Docker image inside container..."
+            docker exec gcloud-runner sh -c "
+              docker build -t \"${DOCKER_FULL_TAG}\" /app
+            "
+
+            echo "Tagging as latest..."
+            docker exec gcloud-runner sh -c "
+              docker tag \"${DOCKER_FULL_TAG}\" \"${DOCKER_LATEST_TAG}\"
+            "
+
+            echo "Pushing Docker image to GCP Artifact Registry..."
+            docker exec gcloud-runner sh -c "
+              docker push \"${DOCKER_FULL_TAG}\" &&
+              docker push \"${DOCKER_LATEST_TAG}\"
+            "
+
+            echo "Cleaning up container"
+            docker stop gcloud-runner
+            docker rm gcloud-runner
+
+            echo "Build and push completed successfully!"
+
+---
+version: 2
+
+release-naming:
+  next-version-name: release-1.1
+  applies-to-branches: true
+  auto-increment: true
+
+environments:
+  - deployment
+# === DEPLOY JOB ===
+deployment:
+  name: Cloud-Run-Deployment
+  source-plan: GER-BUILD
+  triggers: 
+    - build-success  
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Setting up environment variables..."
+            GCP_REGION="us-central1"
+            SERVICE_NAME="my-application"
+            GCP_REPOSITORY="container-images"
+            GCP_PROJECT_ID="${bamboo.GCP_PROJECT_ID_SECRET}"
+            GCP_CLIENT_ID="${bamboo.GCP_CLIENT_ID_SECRET}"
+            GCP_REFRESH_TOKEN="${bamboo.GCP_REFRESH_TOKEN_SECRET}"
+            DOCKER_TAG="${bamboo.repository.revision.number}"
+
+            DOCKER_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}"
+            DOCKER_FULL_TAG="${DOCKER_IMAGE}:${DOCKER_TAG}"
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gcloud-deploy || true
+
+            echo "Starting deployment container..."
+            docker run -d --name gcloud-deploy ubuntu:22.04 tail -f /dev/null
+
+            echo "Installing dependencies and Google Cloud SDK..."
+            docker exec gcloud-deploy sh -c "
+              apt update && \\
+              apt install -y apt-transport-https ca-certificates gnupg curl && \\
+              curl https://packages.cloud.google.com/apt/doc/apt-key.gpg  | apt-key add - && \\
+              echo 'deb https://packages.cloud.google.com/apt  cloud-sdk main' > /etc/apt/sources.list.d/google-cloud-sdk.list && \\
+              apt update && \\
+              apt install -y google-cloud-sdk
+            "
+
+            echo "Authenticating to GCP..."
+            docker exec gcloud-deploy sh -c "
+              gcloud auth activate-refresh-token \"${GCP_CLIENT_ID}\" \"${GCP_REFRESH_TOKEN}\" && \\
+              gcloud config set project \"${GCP_PROJECT_ID}\"
+            "
+
+            echo "Deploying to Cloud Run..."
+            docker exec gcloud-deploy sh -c "
+              gcloud run deploy ${SERVICE_NAME} \\
+                --image=${DOCKER_FULL_TAG} \\
+                --region=${GCP_REGION} \\
+                --platform=managed \\
+                --memory=512Mi \\
+                --cpu=1 \\
+                --min-instances=0 \\
+                --max-instances=10 \\
+                --concurrency=80 \\
+                --timeout=300s \\
+                --port=80 \\
+                --quiet
+            "
+
+            echo "Cleaning up container"
+            docker stop gcloud-deploy
+            docker rm gcloud-deploy

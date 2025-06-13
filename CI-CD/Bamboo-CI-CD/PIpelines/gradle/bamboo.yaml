@@ -1,0 +1,28 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Gradle_Build
+
+stages:
+  - Build:
+      jobs:
+        - Gradle-Build-Job
+
+Gradle-Build-Job:  
+  artifacts:
+    - name: build-artifacts
+      location: build/libs
+      pattern: "**/*"
+      shared: true
+      required: false
+
+  tasks:
+    - checkout:
+        force-clean-build: true
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |-
+            echo "Running Gradle build"
+            ./gradlew build --info

@@ -1,0 +1,12 @@
+pipelines:
+  branches:
+    main:
+      - step:
+          name: Test
+          script:
+            - pipe: sonarsource/sonarqube-scan:1.0.0
+              variables:
+                SONAR_HOST_URL: ${SONAR_HOST_URL}
+                SONAR_TOKEN: ${SONAR_TOKEN}
+                SONAR_PROJECT_KEY: ${PROJECT_KEY}
+                EXTRA_ARGS: -Dsonar.projectKey=${PROJECT_KEY}

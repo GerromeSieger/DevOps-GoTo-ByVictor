@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: next-deployment
+  namespace: default
+  labels:
+    app: next
+    tier: frontend
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3  # Limits the number of old ReplicaSets retained
+  selector:
+    matchLabels:
+      app: next
+      tier: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%       # Percentage-based is often more flexible
+      maxUnavailable: 25% # Allows faster rollouts while maintaining availability
+  template:
+    metadata:
+      labels:
+        app: next
+        tier: frontend
+      annotations:
+        prometheus.io/scrape: "true"  # Enable metrics scraping if using Prometheus
+    spec:
+      containers:
+      - name: nextapp
+        image: gerrome/next-site
+        imagePullPolicy: IfNotPresent  # More efficient than Always unless you need latest on every deploy
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            cpu: "100m"    # Minimum CPU guaranteed
+            memory: "128Mi" # Minimum memory guaranteed
+          limits:
+            cpu: "500m"    # Maximum CPU allowed
+            memory: "512Mi" # Maximum memory allowed
+        livenessProbe:
+          httpGet:
+            path: /        # Or your health check endpoint
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /        # Or your readiness endpoint
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        env:
+        - name: NODE_ENV
+          value: "production"
+      terminationGracePeriodSeconds: 30  # Give time for graceful shutdown
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - next
+              topologyKey: "kubernetes.io/hostname"  # Spread pods across nodes
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: next-service
+  namespace: default
+  labels:
+    app: next
+    tier: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: next
+    tier: frontend
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3000

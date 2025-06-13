@@ -1,0 +1,44 @@
+image: atlassian/default-image:latest
+
+pipelines:
+  branches:
+    main:
+      - parallel:
+        - step:
+            name: Snyk Code Scan
+            image: node:18-slim
+            caches:
+              - npm
+            script:
+              - apt-get update && apt-get install -y ca-certificates
+              - npm install -g snyk@latest --cache .npm --prefer-offline
+              - snyk code test --severity-threshold=high --json-file-output=snyk-code-results.json || true
+              - test -f snyk-code-results.json || echo '{}' > snyk-code-results.json
+            artifacts:
+              - snyk-code-results.json
+            variables:
+              SNYK_TOKEN: $SNYK_TOKEN
+
+
+        - step:
+            name: Snyk Container Scan
+            image: node:18-alpine
+            services:
+              - docker
+            script:
+              - npm install -g snyk@latest
+              
+              - snyk container test --file=Dockerfile --json-file-output=snyk-dockerfile-results.json || true
+              - test -f snyk-dockerfile-results.json || echo '{}' > snyk-dockerfile-results.json
+              
+              - docker build -t myapp:latest .
+              
+              - snyk container test myapp:latest --json-file-output=snyk-image-results.json || true
+              - test -f snyk-image-results.json || echo '{}' > snyk-image-results.json
+            artifacts:
+              - snyk-dockerfile-results.json
+              - snyk-image-results.json
+
+definitions:
+  caches:
+    npm: .npm

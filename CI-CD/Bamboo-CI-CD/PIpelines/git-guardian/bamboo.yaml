@@ -1,0 +1,80 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Git-Guardian-Scan
+
+stages:
+  - Analyze:
+      jobs:
+        - GG-Scan
+
+# === GIT GUARDIAN SCAN JOB ===
+GG-Scan:
+  artifacts:
+    - name: ggshield-results
+      location: .
+      pattern: "ggshield_report*.json"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f gg-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name gg-runner gitguardian/ggshield:latest tail -f /dev/null
+
+            echo "Creating a fresh directory in container"
+            docker exec gg-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." gg-runner:/scan-target/
+
+            echo "Running Git Guardian scanner inside container"
+            docker exec gg-runner sh -c "
+                export GITGUARDIAN_API_KEY=\"${bamboo.GITGUARDIAN_API_KEY_SECRET}\" &&
+                # Set HOME explicitly to avoid Git permission issues
+                export HOME=/tmp/home &&
+                mkdir -p \$HOME &&
+                cd /scan-target &&
+                # Initialize a new git repository to avoid issues with the copied repo
+                rm -rf .git &&
+                git init &&
+                git config --global --add safe.directory /scan-target &&
+                # Add files to make sure Git sees them
+                git add . &&
+                # Create a dummy commit to ensure Git metadata exists
+                git config --global user.email \"pipeline@example.com\" &&
+                git config --global user.name \"Bamboo Pipeline\" &&
+                git commit -m \"Temporary commit for scanning\" --allow-empty &&
+
+                echo \"Attempting scan method 1: direct path scan\" &&
+                ggshield secret scan path -y --json --show-secrets --recursive . > /scan-target/ggshield_report_path.json || \
+                (echo \"Attempting scan method 2: repo scan\" && \
+                 ggshield secret scan repo -y --json --show-secrets --recursive . > /scan-target/ggshield_report_repo.json) || \
+                (echo \"Attempting scan method 3: with SCAN_GIT_IGNORE bypass\" && \
+                 GITGUARDIAN_DONT_USE_GIT=true ggshield secret scan path -y --json --show-secrets --recursive . > /scan-target/ggshield_report_bypass.json)
+                
+                # Debug output - list any generated report files
+                echo \"Generated report files:\" &&
+                find /scan-target -name \"ggshield_report*.json\" || echo \"No report files found\"
+            "
+
+            # Copy each possible report file individually to avoid glob pattern issues
+            echo "Attempting to copy report files individually"
+            docker cp gg-runner:/scan-target/ggshield_report_path.json . || echo "No path report found"
+            docker cp gg-runner:/scan-target/ggshield_report_repo.json . || echo "No repo report found"
+            docker cp gg-runner:/scan-target/ggshield_report_bypass.json . || echo "No bypass report found"
+
+            echo "Cleaning up container"
+            docker stop gg-runner
+            docker rm gg-runner
+
+            echo "Git Guardian scan completed successfully"

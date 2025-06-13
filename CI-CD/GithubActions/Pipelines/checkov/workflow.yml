@@ -1,0 +1,137 @@
+name: Infrastructure Security Scan
+
+on:
+  push:
+    paths:
+      - '**/*.tf'
+      - '**/*.yaml'
+      - '**/*.yml'
+      - '**/*.json'
+      - '.github/workflows/infra-security-scan.yml'
+  pull_request:
+    paths:
+      - '**/*.tf'
+      - '**/*.yaml'
+      - '**/*.yml'
+      - '**/*.json'
+
+jobs:
+  checkov-scan:
+    name: Checkov
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Run Checkov and capture output
+        id: checkov
+        run: |
+          mkdir -p results
+          echo "Running Checkov scan..."
+          checkov -d . \
+            --framework terraform,cloudformation,kubernetes,dockerfile,helm \
+            --soft-fail \
+            --quiet \
+            --output sarif \
+            > results/checkov-output.sarif 2>&1 || echo "Checkov completed with findings"
+          echo "results_dir=$(pwd)/results" >> $GITHUB_OUTPUT
+          echo "Scan completed. Results saved to results/checkov-output.sarif"
+          
+      - name: Verify and store results
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-scan-results
+          path: results/checkov-output.sarif
+          retention-days: 7
+          
+      - name: Post Results as PR Comment
+        if: github.event_name == 'pull_request' && (success() || failure())
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GTHB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const core = require('@actions/core');
+            
+            try {
+              const resultsPath = '${{ steps.checkov.outputs.results_dir }}/checkov-output.sarif';
+              core.info(`Looking for results at: ${resultsPath}`);
+              
+              if (fs.existsSync(resultsPath)) {
+                const results = fs.readFileSync(resultsPath, 'utf8');
+                
+                // Check if results are in SARIF format
+                if (results.trim().startsWith('{')) {
+                  try {
+                    const sarifResults = JSON.parse(results);
+                    const findings = sarifResults.runs?.[0]?.results || [];
+                    
+                    if (findings.length > 0) {
+                      const summary = `### Checkov Security Scan Results\n\n${findings.length} security issues found`;
+                      const details = findings.slice(0, 10).map(finding => {
+                        return `- **${finding.ruleId}**: ${finding.message.text}`;
+                      }).join('\n');
+                      
+                      github.rest.issues.createComment({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        body: `${summary}\n\n${details}`
+                      });
+                    } else {
+                      github.rest.issues.createComment({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        body: '### Checkov Security Scan Results\n\nNo security issues found! ✅'
+                      });
+                    }
+                    return;
+                  } catch (e) {
+                    core.warning('Failed to parse as SARIF, falling back to raw output');
+                  }
+                }
+                
+                // Fallback to raw output parsing
+                const findings = results.split('\n').filter(line => 
+                  line.match(/\[(CRITICAL|HIGH|MEDIUM)\]/));
+                
+                if (findings.length > 0) {
+                  const summary = `### Checkov Security Scan Results\n\n${findings.length} security issues found`;
+                  const details = findings.slice(0, 10).join('\n');
+                  
+                  github.rest.issues.createComment({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    body: `${summary}\n\n<details><summary>Scan Results</summary>\n\n\`\`\`\n${details}\n\`\`\`\n\n</details>`
+                  });
+                } else {
+                  github.rest.issues.createComment({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    body: '### Checkov Security Scan Results\n\nNo security issues found! ✅'
+                  });
+                }
+              } else {
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: '### Checkov Scan Error\n\nResults file not found. Check workflow logs for details.'
+                });
+              }
+            } catch (error) {
+              core.error(`Error processing results: ${error}`);
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '### Checkov Scan Error\n\nFailed to process scan results. Check workflow logs for details.'
+              });
+            }

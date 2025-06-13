@@ -1,0 +1,67 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Security-Checkov-Scan
+
+stages:
+  - Security:
+      jobs:
+        - Checkov-Scan
+
+# === CHECKOV SCAN JOB ===
+Checkov-Scan:
+  artifacts:
+    - name: checkov-results
+      location: results
+      pattern: "*.sarif"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+            
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f checkov-runner || true
+
+            echo "Creating results directory"
+            RESULTS_DIR="${bamboo.build.working.directory}/results"
+            mkdir -p "$RESULTS_DIR"
+
+            echo "Starting temporary container"
+            docker run -d --name checkov-runner python:3.11-slim tail -f /dev/null
+
+            echo "Creating a scan directory in container"
+            docker exec checkov-runner mkdir -p /scan-target
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}/." checkov-runner:/scan-target/
+
+            echo "Installing and running Checkov inside container"
+            docker exec checkov-runner sh -c "
+                cd /scan-target &&
+                pip install checkov &&
+                echo 'Running Checkov scan...' &&
+                mkdir -p /scan-target/results &&
+                checkov -d . \
+                  --framework terraform,cloudformation,kubernetes,dockerfile,helm \
+                  --soft-fail \
+                  --quiet \
+                  --output sarif > /scan-target/results/checkov-output.sarif 2>&1 || echo 'Checkov completed with findings'
+            "
+
+            echo "Copying results back to host"
+            docker cp checkov-runner:/scan-target/results/. "$RESULTS_DIR/" || echo "No results found"
+
+            echo "Checkov scan results:"
+            ls -la "$RESULTS_DIR" || echo "No results directory found"
+
+            echo "Cleaning up container"
+            docker stop checkov-runner
+            docker rm checkov-runner
+            
+            echo "Checkov scan completed successfully"

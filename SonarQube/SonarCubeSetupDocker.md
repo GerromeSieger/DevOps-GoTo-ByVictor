@@ -43,8 +43,6 @@ nano docker-compose.yml
 Paste this
 
 ```docker-compose
-version: '3.8'
-
 services:
   sonarqube:
     image: sonarqube:9.8.0-community

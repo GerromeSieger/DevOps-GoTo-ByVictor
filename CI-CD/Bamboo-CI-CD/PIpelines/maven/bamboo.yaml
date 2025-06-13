@@ -1,0 +1,28 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Maven_Build
+
+stages:
+  - Build:
+      jobs:
+        - Maven-Build-Job
+
+Maven-Build-Job:
+  artifacts:
+    - name: build-artifacts
+      location: target
+      pattern: "**/*"
+      shared: true
+
+  tasks:
+    - checkout:
+        force-clean-build: 'true'  
+    - maven:
+        executable: Maven 3
+        jdk: JDK 21
+        goal: package
+        environment: JAVA_HOME="/opt/java/openjdk"
+
+  artifact-subscriptions: []

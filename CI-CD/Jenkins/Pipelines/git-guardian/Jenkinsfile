@@ -1,0 +1,32 @@
+pipeline {
+    agent any
+    stages {
+        stage('GitGuardian Scan') {
+            agent {
+                docker { 
+                    image 'gitguardian/ggshield:latest'
+                    args '--rm'  // Automatically remove container when done
+                }
+            }
+            environment {
+                GITGUARDIAN_API_KEY = credentials('GITGUARDIAN_API_KEY')
+            }
+            steps {
+                sh 'ggshield secret scan ci'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'ggshield_report*.json', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                sh 'docker image prune -f || true'
+                sh 'docker rmi gitguardian/ggshield:latest || true'
+            }
+        }
+    }
+}

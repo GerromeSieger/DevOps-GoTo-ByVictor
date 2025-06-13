@@ -1,0 +1,53 @@
+variables:
+  ANT_OPTS: "-Xmx512m"
+  IVY_VERSION: "2.5.2"
+  JAVA_HOME: "/opt/java/openjdk"
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .ant/
+    - lib/
+    - ~/.ant/lib/
+
+stages:
+  - build
+
+# Build job using Ant with Ivy for dependency management
+build:
+  stage: build
+  image: eclipse-temurin:17-jdk
+  before_script:
+    - echo "Setting up build environment..."
+    - apt-get update -qq
+    - apt-get install -y -qq ant wget
+    - mkdir -p .ant lib ~/.ant/lib
+    # Download and setup Apache Ivy for dependency management
+    - echo "Downloading Apache Ivy ${IVY_VERSION}..."
+    - wget -q -O ~/.ant/lib/ivy-${IVY_VERSION}.jar https://repo1.maven.org/maven2/org/apache/ivy/ivy/${IVY_VERSION}/ivy-${IVY_VERSION}.jar
+    - echo "Ivy setup completed"
+  script:
+    - echo "Starting build process..."
+    - echo "Java version:"
+    - java -version
+    - echo "Ant version:"
+    - ant -version
+    # Resolve dependencies, clean, and build
+    - echo "Resolving dependencies and building..."
+    - ant -f antbuild.xml resolve clean build
+    - echo "Build completed successfully"
+    # List artifacts for verification
+    - echo "Generated artifacts:"
+    - find build/ dist/ lib/ -type f -name "*.jar" 2>/dev/null || echo "No JAR files found"
+    - ls -la build/ dist/ lib/ 2>/dev/null || echo "Directories not found"
+  artifacts:
+    name: "build-artifacts-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - build/
+      - dist/
+      - lib/
+    expire_in: 1 week
+    when: always
+
+  only:
+    - main

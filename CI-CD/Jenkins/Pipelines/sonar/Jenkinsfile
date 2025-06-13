@@ -22,6 +22,12 @@ pipeline {
                         """
                 }
             }
+            
+            post {
+                always {
+                    sh 'docker rmi sonarsource/sonar-scanner-cli:latest || true'
+                }
+            }    
         }
     }
 }

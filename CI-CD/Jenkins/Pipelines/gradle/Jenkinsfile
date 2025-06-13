@@ -1,0 +1,46 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Build with Gradle') {
+            agent {
+                docker {
+                    image 'gradle:7.4-jdk17'
+                    args '-u root'
+                    reuseNode true
+                }
+            }
+            steps {
+                script {
+                    try {
+                        // Attempt to build the project using Gradle
+                        echo 'Building the project...'
+                        sh './gradlew build'
+
+                        echo 'Archiving the generated artifact...'
+                        archiveArtifacts artifacts: 'build/libs/*.jar', fingerprint: true
+
+                        echo 'Build completed successfully.'
+                    } catch (Exception e) {
+                        echo "Error occurred during the build process: ${e.message}"
+                        currentBuild.result = 'FAILURE' // Mark the build as failed
+                        throw e // Re-throw the exception to stop the pipeline
+                    }
+                }
+            }
+            post {
+                always {
+                    echo 'Cleaning up Docker image...'
+                    sh 'docker rmi gradle:7.4-jdk17 || true'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            cleanWs()
+        }
+    }
+}

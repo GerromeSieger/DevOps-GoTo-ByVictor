@@ -28,6 +28,13 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 - For GitHub: Account settings -> Developer settings -> Personal access tokens
 - For GitLab: User settings -> Access Tokens
 
+## Create Access to Bitbucket using ssh
+
+- Generate ssh-keys on the Jenkins server "ssh-keygen"
+- Copy the public key to the Bitbucket Repository settings -> Access keys -> paste the public key
+- Copy the private key and take note of the username and create credentials for them on Jenkins.
+- Use the credentials to authenticate to the bitbucket repo when configuring your pipeline project on Jenkins.
+
 ## Set Up Project Pipeline
 
 ### Single Branch Pipeline
@@ -63,8 +70,11 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 - For GitLab (Pipeline project):
     - Settings -> Webhooks
         - URL: http://your_jenkins_url:8080/project/JobName
-        - Secret Token: Use token generated in Jenkins
-
+        - Secret Token: 
+            - In Jenkins, go to your Pipeline job → Configure.
+            - Under Build Triggers, enable "Build when a change is pushed to GitLab".
+            - Click Advanced → Generate a token (or manually enter a secure string).
+            - Copy and paste this token into GitLab’s Secret Token field.
 
 - For GitLab (Multibranch Pipeline project):
     - Settings -> Integrations -> Jenkins
@@ -72,6 +82,10 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
         - Project name: Jenkins job name
         - Username and Password: Jenkins credentials
 
+- For Bitbucket (Pipeline Project):
+    - On Jenkins, Enable Generic Webhook trigger on Jenkins and generate any secure token to be used.
+    - On Bitbucket, -> 
+Repository settings -> Webhooks -> Paste Jenkins server URL: http://your_jenkins_url:8080/generic-webhook-trigger/invoke?token=GENERATED_JENKINS_TOKEN
 
 
 ## Additional Configuration (Optional)

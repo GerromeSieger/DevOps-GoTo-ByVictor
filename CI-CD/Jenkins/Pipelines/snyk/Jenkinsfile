@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    environment {
+        SNYK_TOKEN = credentials('SNYK_TOKEN')
+    }
+
+    stages {
+        stage('Code Scan') {
+            agent {
+                docker {
+                    image 'node:18-slim'
+                    args '-u root'
+                }
+            }
+            steps {
+                script {
+                    sh 'apt-get update && apt-get install -y ca-certificates'
+                    sh 'npm install -g snyk@latest --cache .npm --prefer-offline'
+                    sh "snyk auth \$SNYK_TOKEN"
+                    sh "snyk code test --severity-threshold=high --sarif-file-output=snyk-code-results.sarif || true"
+                    sh "test -f snyk-code-results.sarif || echo '{}' > snyk-code-results.sarif"
+
+                    archiveArtifacts artifacts: 'snyk-code-results.sarif', fingerprint: true
+                }
+            }
+            post {
+                always {
+                    sh 'docker rmi node:18-slim --force || true'
+                }
+            }
+        }
+
+        stage('Container Scan') {
+            agent {
+                docker {
+                    image 'docker:latest'
+                    args '-u root'
+                    reuseNode true
+                }
+            }
+            steps {
+                script {
+                    sh 'apk add --no-cache nodejs npm'
+                    sh 'npm install -g snyk@latest'
+                    sh "snyk auth \$SNYK_TOKEN"
+                    sh 'docker build -t my-app:$GIT_COMMIT .'
+                    sh "snyk container test --file=Dockerfile --severity-threshold=high --json-file-output=snyk-dockerfile-results.json || true"
+                    sh "snyk container test --file=Dockerfile --severity-threshold=high --sarif-file-output=snyk-dockerfile-results.sarif || true"
+                    sh "snyk container test my-app:$GIT_COMMIT --severity-threshold=high --json-file-output=snyk-image-results.json || true"
+                    sh "snyk container test my-app:$GIT_COMMIT --severity-threshold=high --sarif-file-output=snyk-image-results.sarif || true"
+
+                    archiveArtifacts artifacts: 'snyk-dockerfile-results.sarif, snyk-dockerfile-results.json, snyk-image-results.sarif, snyk-image-results.json', fingerprint: true
+                }
+            }
+            post {
+                always {
+                    sh 'docker rmi docker:latest --force || true'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            cleanWs()
+        }
+    }
+}

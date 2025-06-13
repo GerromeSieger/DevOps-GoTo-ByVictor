@@ -1,0 +1,132 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_TAG = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+        GCP_REGION = 'us-central1'
+        SERVICE_NAME = 'my-application'
+        GCP_REPOSITORY = 'container-images'
+    }
+    
+    stages {
+        stage('Build and Push') {
+            environment {
+                GCP_PROJECT_ID = credentials('GCP_PROJECT_ID')
+                GCP_CLIENT_ID = credentials('GCP_CLIENT_ID')
+                GCP_REFRESH_TOKEN = credentials('GCP_REFRESH_TOKEN')
+            }
+            
+            agent {
+                docker {
+                    image 'gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u root:root'
+                    reuseNode true
+                }
+            }
+            
+            steps {
+                script {
+                    sh '''
+                        apk add --no-cache docker-cli
+                        gcloud auth activate-refresh-token "${GCP_CLIENT_ID}" "${GCP_REFRESH_TOKEN}"
+                        gcloud config set project "${GCP_PROJECT_ID}"
+                        gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+                        
+                        # Create repository if it doesn't exist
+                        gcloud artifacts repositories describe ${GCP_REPOSITORY} --location=${GCP_REGION} || \
+                        gcloud artifacts repositories create ${GCP_REPOSITORY} --repository-format=docker --location=${GCP_REGION}
+                        
+                        # Build and push the image
+                        ARTIFACT_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}"
+                        
+                        docker build -t ${ARTIFACT_IMAGE}:${DOCKER_TAG} .
+                        docker tag ${ARTIFACT_IMAGE}:${DOCKER_TAG} ${ARTIFACT_IMAGE}:latest
+                        docker push ${ARTIFACT_IMAGE}:${DOCKER_TAG}
+                        docker push ${ARTIFACT_IMAGE}:latest
+                        
+                        # Save the full image path for the next stage
+                        echo "${ARTIFACT_IMAGE}:${DOCKER_TAG}" > full_image_path.txt
+                    '''
+                    
+                    // Store the full image path as an environment variable for later stages
+                    env.FULL_IMAGE_PATH = readFile('full_image_path.txt').trim()
+                }
+            }
+            
+            post {
+                always {
+                    sh 'docker rmi gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine --force || true'
+                }
+            }
+        }
+        
+        stage('Deploy to Cloud Run') {
+            environment {
+                GCP_PROJECT_ID = credentials('GCP_PROJECT_ID')
+                GCP_CLIENT_ID = credentials('GCP_CLIENT_ID')
+                GCP_REFRESH_TOKEN = credentials('GCP_REFRESH_TOKEN')
+            }
+            
+            agent {
+                docker {
+                    image 'google/cloud-sdk:slim'
+                    args '-u root:root'
+                    reuseNode true
+                }
+            }
+            
+            steps {
+                script {
+                    // No need to install Google Cloud SDK as it's already in the image
+                    
+                    sh """
+                        set -e  # Exit on any error
+                        
+                        echo "Authenticating with Google Cloud..."
+                        gcloud auth activate-refresh-token \${GCP_CLIENT_ID} \${GCP_REFRESH_TOKEN}
+                        
+                        echo "Setting GCP project..."
+                        gcloud config set project \${GCP_PROJECT_ID}
+                        
+                        echo "Deploying to Cloud Run..."
+                        gcloud run deploy ${SERVICE_NAME} \\
+                            --image=${env.FULL_IMAGE_PATH} \\
+                            --region=${GCP_REGION} \\
+                            --platform=managed \\
+                            --memory=512Mi \\
+                            --cpu=1 \\
+                            --min-instances=0 \\
+                            --max-instances=10 \\
+                            --concurrency=80 \\
+                            --timeout=300s \\
+                            --port=80 \\
+                            --quiet
+                        
+                        echo "Getting service URL..."
+                        SERVICE_URL=\$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format='value(status.url)')
+                        echo "Deployed to: \$SERVICE_URL"
+                    """
+                }
+            }
+            
+            post {
+                success {
+                    echo "Deploy stage completed successfully"
+                }
+                failure {
+                    echo "Deploy stage failed"
+                }
+                always {
+                    sh 'docker rmi google/cloud-sdk:slim || true'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            sh 'docker system prune -af || true'
+        }
+    }
+}

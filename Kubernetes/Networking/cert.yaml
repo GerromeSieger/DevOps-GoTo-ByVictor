@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: app-sieger-com-ng
+  namespace: istio-system  # Important - certs must be in same namespace as ingress gateway
+spec:
+  secretName: app.sieger.com.ng-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - app.sieger.com.ng

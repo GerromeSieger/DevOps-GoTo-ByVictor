@@ -1,0 +1,74 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  DOCKER_TAG: ${CI_COMMIT_SHA}
+  GCP_REGION: us-central1
+  SERVICE_NAME: my-application
+  GCP_REPOSITORY: container-images
+  DOCKER_IMAGE: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "/certs/client"
+
+
+build:
+  stage: build
+  image: 
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine
+    entrypoint: [""]
+  services:
+    - name: docker:dind
+      command: ["--tls=true", "--tlscert=/certs/server/cert.pem", "--tlskey=/certs/server/key.pem"]
+  before_script:
+    - apk add --no-cache docker-cli
+    - gcloud auth activate-refresh-token "$GCP_CLIENT_ID" "$GCP_REFRESH_TOKEN"
+    - gcloud config set project "$GCP_PROJECT_ID"
+    - gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+  script:
+    - echo "Building and pushing Docker image to Artifact Registry..."
+    - gcloud artifacts repositories describe ${GCP_REPOSITORY} --location=${GCP_REGION} || gcloud artifacts repositories create ${GCP_REPOSITORY} --repository-format=docker --location=${GCP_REGION}
+    - docker build -t ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} .
+    - docker tag ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:latest
+    - docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG}
+    - docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:latest
+    - echo "Successfully pushed image ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG}"
+  only:
+    - main
+
+deploy:
+  image: ubuntu:22.04
+  stage: deploy
+  needs:
+    - build
+  before_script:
+    - apt-get update
+    - apt-get install -y apt-transport-https ca-certificates gnupg curl
+    - echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+    - curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+    - apt-get update
+    - apt-get install -y google-cloud-sdk
+  script:
+    - gcloud auth activate-refresh-token "$GCP_CLIENT_ID" "$GCP_REFRESH_TOKEN"
+    - gcloud config set project "$GCP_PROJECT_ID"
+    - |-
+      gcloud run deploy ${SERVICE_NAME} \
+        --image=${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPOSITORY}/${SERVICE_NAME}:${DOCKER_TAG} \
+        --region=${GCP_REGION} \
+        --platform=managed \
+        --memory=512Mi \
+        --cpu=1 \
+        --min-instances=0 \
+        --max-instances=10 \
+        --concurrency=80 \
+        --timeout=300s \
+        --port=80 \
+        --quiet
+    - |-
+      SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format='value(status.url)')
+      echo "Deployed to: $SERVICE_URL"
+      # Optional: You can add verification steps here
+  only:
+    - main

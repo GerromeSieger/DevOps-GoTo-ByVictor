@@ -1,0 +1,92 @@
+version: 2
+plan:
+  project-key: GER
+  key: BUILD
+  name: Docker-Build
+
+stages:
+  - Build-Docker:
+      jobs:
+        - Build-And-Push
+
+# === BUILD DOCKER IMAGE JOB ===
+Build-And-Push:
+  tasks:
+  - checkout:
+      force-clean-build: 'true'
+  - any-task:
+      plugin-key: com.atlassian.bamboo.plugins.bamboo-docker-plugin:task.docker.cli
+      configuration:
+        commandOption: build
+        repository: ${bamboo.DOCKER_IMAGE_SECRET}
+        tag: ${bamboo.planRepository.revision}
+        dockerfileOption: existing
+        nocache: 'false'
+        save: 'false'
+      description: Build Docker image with commit SHA tag
+  - any-task:
+      plugin-key: com.atlassian.bamboo.plugins.bamboo-docker-plugin:task.docker.cli
+      configuration:
+        commandOption: push
+        username: ${bamboo.DOCKERHUB_USERNAME_SECRET}
+        password: ${bamboo.DOCKERHUB_PASSWORD}
+        pushRepository: ${bamboo.DOCKER_IMAGE_SECRET}
+        tag: ${bamboo.planRepository.revision}
+        registryOption: hub
+      description: Push Docker image with commit SHA tag
+  artifact-subscriptions: []
+
+---
+version: 2
+
+release-naming:
+  next-version-name: release-1.1
+  applies-to-branches: true
+  auto-increment: true
+
+environments:
+  - deployment
+# === DEPLOY DOCKER CONTAINER ===
+deployment:
+  name: Docker-Deployment
+  source-plan: GER-BUILD
+  triggers: 
+    - build-success
+  tasks:
+    - ssh:
+        host: ${bamboo.DEPLOY_HOST_SECRET}
+        authentication:
+            username: ${bamboo.DEPLOY_USER_SECRET}
+            shared-credentials: SSHKEY
+        description: SSH-To-Remote-Server
+        command: |
+            set -e
+
+            DOCKERHUB_USERNAME='${bamboo.DOCKERHUB_USERNAME_SECRET}'
+            DOCKERHUB_PASSWORD='${bamboo.DOCKERHUB_PASSWORD}'
+            DOCKER_IMAGE='${bamboo.DOCKER_IMAGE_SECRET}'
+            DOCKER_CONTAINER_NAME=react-app
+            CONTAINER_PORT=3000
+            HOST_PORT=80        
+
+            echo 'Logging into Docker Hub...'
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+            echo 'Cleaning up old containers...'
+            if docker ps -q --filter name=${DOCKER_CONTAINER_NAME} | grep -q .; then
+              docker ps -q --filter name=${DOCKER_CONTAINER_NAME} | xargs docker stop
+            fi
+
+            if docker ps -aq --filter name=${DOCKER_CONTAINER_NAME} | grep -q .; then
+              docker ps -aq --filter name=${DOCKER_CONTAINER_NAME} | xargs docker rm
+            fi
+
+            echo "Pulling new image: ${DOCKER_IMAGE}"
+            docker pull ${DOCKER_IMAGE}
+
+            echo 'Running new container....'
+            docker run -d \
+              --name ${DOCKER_CONTAINER_NAME} \
+              -p ${HOST_PORT}:${CONTAINER_PORT} \
+              --restart unless-stopped \
+              ${DOCKER_IMAGE}

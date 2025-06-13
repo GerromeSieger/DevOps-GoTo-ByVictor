@@ -1,0 +1,40 @@
+version: 2.1
+
+workflows:
+  version: 2
+  build-test-deploy:
+    jobs:
+      - test:
+          filters:
+            branches:
+              only: main
+
+jobs:
+  test:
+    docker:
+      - image: docker:latest
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build and scan with Trivy
+          command: |
+            # Generate Docker tag
+            DOCKER_TAG=${CIRCLE_SHA1:0:7}
+            echo "Using Docker tag: $DOCKER_TAG"
+            
+            # Install trivy
+            apk add --no-cache curl ca-certificates
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            
+            # Build Docker image
+            docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            
+            # Scan image with trivy
+            mkdir -p reports
+            trivy image --format json -o reports/trivy-results.json $DOCKER_IMAGE:$DOCKER_TAG
+            trivy image --format table -o reports/trivy-results.txt $DOCKER_IMAGE:$DOCKER_TAG
+            cat reports/trivy-results.txt
+      - store_artifacts:
+          path: reports
+          destination: trivy-reports

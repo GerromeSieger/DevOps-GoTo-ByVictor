@@ -1,0 +1,19 @@
+pipelines:
+  branches:
+    main:   
+      - step:
+          name: Test
+          services:
+            - docker
+          script:
+            - export DOCKER_TAG=${BITBUCKET_COMMIT:0:7}          
+            - apt-get update
+            - apt-get install -y curl
+            - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            - docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+            - trivy image --format json -o trivy-results.json $DOCKER_IMAGE:$DOCKER_TAG
+            - trivy image --format table -o trivy-results.txt $DOCKER_IMAGE:$DOCKER_TAG
+          artifacts:
+            - trivy-results.json
+            - trivy-results.txt
+          allow_failure: true

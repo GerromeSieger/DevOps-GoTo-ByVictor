@@ -1,0 +1,35 @@
+services:
+  bitbucket:
+    image: atlassian/bitbucket:latest
+    container_name: bitbucket-server
+    ports:
+      - "8080:7990"   # HTTP port
+      - "7999:7999"   # SSH port for Git
+    volumes:
+      - bitbucket-data:/var/atlassian/application-data/bitbucket
+    environment:
+      - JAVA_OPTS=-Xms1g -Xmx2g
+      - ELASTICSEARCH_ENABLED=true
+      - SERVER_PROXY_NAME=your-domain.com  # Optional: Set if using reverse proxy
+      - SERVER_PROXY_PORT=443              # Optional: Set if using reverse proxy
+      - SERVER_SCHEME=https                # Optional: Set if using HTTPS
+    restart: unless-stopped
+
+  postgresql:
+    image: postgres:13
+    container_name: bitbucket-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=bitbucket
+      - POSTGRES_PASSWORD=bitbucket_password  # Change this!
+      - POSTGRES_DB=bitbucket
+    restart: unless-stopped
+
+volumes:
+  bitbucket-data:
+    external: false
+  postgresql-data:
+    external: false

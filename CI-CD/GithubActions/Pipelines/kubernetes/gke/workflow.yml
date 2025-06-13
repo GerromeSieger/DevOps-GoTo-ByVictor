@@ -1,0 +1,78 @@
+name: Build and Deploy to GKE
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:   
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+          
+      - name: Build and Push
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    needs: build
+    permissions:
+      contents: 'read'
+      id-token: 'write'  # Required for Workload Identity Federation
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: 'projects/475219846787/locations/global/workloadIdentityPools/github-gke-pool/providers/github-gke-provider'
+          service_account: 'gke-deployer-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+          token_format: 'access_token'
+          
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          install_components: 'gke-gcloud-auth-plugin,kubectl'
+          
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v1
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
+          location: ${{ secrets.GKE_CLUSTER_ZONE }}
+        
+      - name: Verify kubectl configuration
+        run: |
+          kubectl get nodes
+
+      - name: Deploy the Kubernetes resources
+        run: |
+          awk -v image="${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}" '
+            /image:/ {$0 = "        image: " image}
+            {print}
+          ' k8s/app.yml > temp.yml && mv temp.yml k8s/app.yml
+          if [[ -n $(git status -s) ]]; then
+            kubectl apply -f k8s/
+          else
+            echo "No changes detected in Kubernetes manifests."
+          fi

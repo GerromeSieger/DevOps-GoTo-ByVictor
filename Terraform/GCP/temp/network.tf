@@ -1,0 +1,25 @@
+resource "google_compute_network" "vpc" {
+  name                    = "my-custom-vpc"
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "subnet" {
+  name          = "my-custom-subnet"
+  ip_cidr_range = "10.0.1.0/24"
+  network       = google_compute_network.vpc.id
+  region        = var.region
+}
+
+# firewall.tf
+resource "google_compute_firewall" "allow_ssh_http" {
+  name    = "allow-ssh-http"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22", "8000", "3000", "8080", "80", "9000", "8085"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["web-server", "sonarqube"]
+}

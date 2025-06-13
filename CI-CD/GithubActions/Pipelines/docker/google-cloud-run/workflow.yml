@@ -1,0 +1,103 @@
+name: Build/Push to Google Artifact Repository and Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-central1
+  SERVICE_NAME: my-application
+  REPOSITORY: container-images
+  DOCKER_IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/container-images/my-application
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install Google Cloud SDK
+      run: |
+        sudo apt-get install apt-transport-https ca-certificates gnupg
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+        sudo apt-get update && sudo apt-get install google-cloud-sdk
+
+    - name: Configure gcloud
+      run: |
+        gcloud auth activate-refresh-token ${{ secrets.GCP_CLIENT_ID }} ${{ secrets.GCP_REFRESH_TOKEN }}
+        gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+    
+    - name: Configure Docker with gcloud credentials
+      run: |
+        gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+    
+    - name: Build Docker image
+      run: |
+        docker build -t ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} .
+        docker build -t ${{ env.DOCKER_IMAGE }}:latest .
+    
+    - name: Push Docker image to Artifact Registry
+      run: |
+        docker push ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
+        docker push ${{ env.DOCKER_IMAGE }}:latest
+        
+    - name: Generate deployment SHA
+      id: sha
+      run: echo "SHA=${{ env.DOCKER_TAG }}" >> $GITHUB_OUTPUT
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    needs: build
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install Google Cloud SDK
+      run: |
+        sudo apt-get install apt-transport-https ca-certificates gnupg
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+        sudo apt-get update && sudo apt-get install google-cloud-sdk
+        
+    - name: Configure gcloud
+      run: |
+        gcloud auth activate-refresh-token ${{ secrets.GCP_CLIENT_ID }} ${{ secrets.GCP_REFRESH_TOKEN }}
+        gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+      
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image=${{ env.DOCKER_IMAGE }}:${{ needs.build.outputs.SHA || github.sha }} \
+          --region=${{ env.REGION }} \
+          --platform=managed \
+          --allow-unauthenticated \
+          --memory=512Mi \
+          --cpu=1 \
+          --min-instances=0 \
+          --max-instances=10 \
+          --concurrency=80 \
+          --timeout=300s \
+          --port=80 \
+          --quiet
+          
+    - name: Get Cloud Run URL
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region=${{ env.REGION }} --format='value(status.url)')
+        echo "Deployed to: $SERVICE_URL"
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV

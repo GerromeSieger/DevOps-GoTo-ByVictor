@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: next-deployment-v1
+  namespace: default
+  labels:
+    app: next
+    tier: frontend
+    version: v1
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: next
+      tier: frontend
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: next
+        tier: frontend
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+    spec:
+      containers:
+      - name: nextapp
+        image: gerrome/next-site  # Specify a tag for clarity
+        ports:
+        - containerPort: 3000
+          name: http
+        # Rest of the container spec remains the same as your original

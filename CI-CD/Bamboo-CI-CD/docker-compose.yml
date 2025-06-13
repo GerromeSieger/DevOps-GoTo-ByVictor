@@ -1,0 +1,54 @@
+services:
+  bamboo-server:
+    image: atlassian/bamboo
+    container_name: bamboo-server
+    user: root
+    ports:
+      - 54663:54663
+      - 8085:8085
+    volumes:
+      - ./bamboohome:/var/atlassian/application-data/bamboo
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - JVM_MINIMUM_MEMORY=1024m
+      - JVM_MAXIMUM_MEMORY=2048m
+    networks:
+      - bamboo      
+
+  postgres:
+    image: postgres
+    container_name: bamboo-postgres
+    environment:
+      - POSTGRES_DB=bamboo
+      - POSTGRES_USER=bamboo
+      - POSTGRES_PASSWORD=bamboo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - bamboo      
+
+  bamboo-agent:
+    build:
+      context: .
+    container_name: bamboo-agent
+    user: root
+    privileged: true
+    volumes:
+      - bamboo_agent:/var/atlassian/application-data/bamboo
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - BAMBOO_SERVER=http://bamboo-server:8085
+    depends_on:
+      - bamboo-server
+    networks:
+      - bamboo         
+
+
+networks:
+  bamboo:
+
+volumes:
+  bamboo_agent:
+  postgres_data:

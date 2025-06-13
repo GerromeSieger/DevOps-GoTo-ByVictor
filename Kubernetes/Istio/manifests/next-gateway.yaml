@@ -1,0 +1,15 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: next-gateway
+  namespace: default
+spec:
+  selector:
+    istio: ingressgateway # Use the default istio gateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"  # Or your specific domain

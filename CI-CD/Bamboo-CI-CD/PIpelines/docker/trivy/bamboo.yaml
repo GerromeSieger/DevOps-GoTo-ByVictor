@@ -1,0 +1,53 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Trivy-Scan
+
+stages:
+  - Analyze:
+      jobs:
+        - Trivy-Scan
+
+# === TRIVY SCAN JOB ===
+Trivy-Scan:
+  artifacts:
+    - name: trivy-results
+      location: .
+      pattern: "trivy-results.json"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up previous container (if exists)"
+            docker rm -f trivy-runner || true
+
+            echo "Starting temporary container"
+            docker run -d --name trivy-runner -v /var/run/docker.sock:/var/run/docker.sock docker:latest tail -f /dev/null
+
+            echo "Copying source files into container"
+            docker cp "${bamboo.build.working.directory}" trivy-runner:/app
+
+            echo "Running Trivy scanner inside container"
+            docker exec trivy-runner sh -c "
+                apk add --no-cache curl &&
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin &&
+                cd /app &&
+                docker build -t myapp:image . &&
+                trivy image --format json -o trivy-results.json myapp:image
+            "
+
+            echo "Copying trivy result output back to host"
+            docker cp trivy-runner:/app/trivy-results.json .
+
+            echo "Cleaning up container"
+            docker stop trivy-runner
+            docker rm trivy-runner
+
+            echo "Trivy scan completed successfully"

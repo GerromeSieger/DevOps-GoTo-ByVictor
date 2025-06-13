@@ -1,0 +1,64 @@
+version: 2
+plan:
+  project-key: GER
+  key: GER
+  name: Ant_Build
+
+stages:
+  - Build:
+      jobs:
+        - Ant-Build-Job
+
+Ant-Build-Job:
+  artifacts:
+    - name: build-artifacts
+      location: build
+      pattern: "**/*"
+      shared: true
+  tasks:
+    - checkout:
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |
+            set -e
+
+            echo "Cleaning up any previous container"
+            docker rm -f ant-builder || true
+
+            echo "Starting Docker container for Ant build"
+            docker run -d --name ant-builder eclipse-temurin:17-jdk tail -f /dev/null
+
+            echo "Copying source files into the container"
+            docker cp "${bamboo.build.working.directory}" ant-builder:/app
+
+            echo "Installing dependencies inside container"
+            docker exec ant-builder sh -c "
+              apt-get update && \\
+              apt-get install -y ant && \\
+              mkdir -p ~/.ant/lib && \\
+              export ANT_OPTS='-Xmx512m' && \\
+              
+              echo 'Downloading Apache Ivy...' && \\
+              wget -v -O /tmp/ivy.jar https://repo1.maven.org/maven2/org/apache/ivy/ivy/2.5.1/ivy-2.5.1.jar && \\
+              mv /tmp/ivy.jar ~/.ant/lib/
+            "
+
+            echo "Running Ant build process"
+            docker exec ant-builder sh -c "
+              cd /app &&
+              echo 'Resolving dependencies with Ivy...' &&
+              ant -buildfile antbuild.xml resolve &&
+              echo 'Compiling Java code and building JAR...' &&
+              ant -buildfile antbuild.xml compile jar
+            "
+
+            echo "Copying build artifacts back to host"
+            docker cp ant-builder:/app/build "${bamboo.build.working.directory}" || echo "No build artifacts found"
+            
+            echo "Stopping and cleaning up container"
+            docker stop ant-builder
+            docker rm ant-builder
+
+            echo "Build completed successfully"

@@ -1,0 +1,47 @@
+version: '3.7'
+
+services:
+  runner-1:
+    image: circleci/runner:launch-agent
+    container_name: circleci-runner-1
+    restart: unless-stopped
+    env_file:
+      - .env    
+    environment:
+      - CIRCLECI_API_TOKEN=${CIRCLECI_API_TOKEN}
+      - CIRCLECI_RESOURCE_CLASS=${CIRCLECI_RESOURCE_CLASS}
+      - CIRCLECI_RUNNER_NAME=runner-1
+      - CIRCLECI_API_URL=https://runner-backend.circleci.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner-1-data:/home/circleci/.circleci-runner
+
+  runner-2:
+    image: circleci/runner:launch-agent
+    container_name: circleci-runner-2
+    restart: unless-stopped
+    env_file:
+      - .env    
+    environment:
+      - CIRCLECI_API_TOKEN=${CIRCLECI_API_TOKEN}
+      - CIRCLECI_RESOURCE_CLASS=${CIRCLECI_RESOURCE_CLASS}
+      - CIRCLECI_RUNNER_NAME=runner-2
+      - CIRCLECI_API_URL=https://runner-backend.circleci.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner-2-data:/home/circleci/.circleci-runner
+
+  runner-3:
+    image: circleci/runner:launch-agent
+    container_name: circleci-runner-3
+    restart: unless-stopped
+    env_file:
+      - .env    
+    environment:
+      - CIRCLECI_API_TOKEN=${CIRCLECI_API_TOKEN}
+      - CIRCLECI_RESOURCE_CLASS=${CIRCLECI_RESOURCE_CLASS}
+      - CIRCLECI_RUNNER_NAME=runner-3
+      - CIRCLECI_API_URL=https://runner-backend.circleci.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner-3-data:/home/circleci/.circleci-runner

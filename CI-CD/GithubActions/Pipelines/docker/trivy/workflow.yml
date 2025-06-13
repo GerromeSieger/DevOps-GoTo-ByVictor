@@ -1,0 +1,35 @@
+name: Trivy Image Scan Workflow
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    permissions:
+      contents: read 
+      security-events: write
+      actions: read
+    runs-on: "ubuntu-20.04"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build an image from Dockerfile
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@7b7aa264d83dc58691451798b4d117d53d21edfe
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}'
+          format: 'template'
+          template: '@/contrib/sarif.tpl'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'

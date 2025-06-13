@@ -3,15 +3,19 @@
 ## Linux (CLI)
 
 ```bash
-# Add the Cloud SDK distribution URI as a package source
-echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-510.0.0-linux-x86_64.tar.gz
 
-# Import the Google Cloud public key
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+./google-cloud-sdk/install.sh
+tar -xf google-cloud-cli-510.0.0-linux-x86_64.tar.gz
 
-# Update and install the Cloud SDK
-sudo apt update 
-sudo apt install google-cloud-cli -y
+exec -l $SHELL
+
+# authenticate with google cloud
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project <project-id>
+gcloud projects get-iam-policy <project-id>
+gcloud services enable compute.googleapis.com
 
 ```
 

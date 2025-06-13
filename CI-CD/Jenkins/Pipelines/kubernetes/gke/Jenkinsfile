@@ -1,0 +1,144 @@
+pipeline {
+    agent any
+    environment {
+       DOCKER_TAG = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+    }
+    stages {
+        stage('Build') {
+            environment {
+                DOCKERHUB_CREDENTIALS = credentials('DOCKERHUB_CREDENTIALS')
+                DOCKER_IMAGE = credentials('DOCKER_IMAGE')
+            }            
+            agent {
+                docker { 
+                    image 'docker:dind'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u root:root'
+                    reuseNode true
+                }
+            }
+            
+            steps {
+                script {
+                    echo "DOCKER_IMAGE: ${DOCKER_IMAGE}"
+                    echo "DOCKER_TAG: ${DOCKER_TAG}"
+                    sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+                    def customImage = docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                    customImage.push()
+                    customImage.push("latest")
+                    sh 'docker logout'
+                }
+            }
+            
+            post {
+                always {
+                    sh 'docker rmi docker:dind --force || true'
+                }
+            }
+        }
+
+        stage('Deploy') {
+            environment {
+                MANIFEST_REPO = credentials('MANIFEST_REPO')
+                DOCKER_IMAGE = credentials('DOCKER_IMAGE')
+            }
+            agent {
+                docker {
+                    image 'ubuntu:22.04'
+                    args '-u root:root'
+                    reuseNode true
+                }
+            }
+            steps {
+                script {
+                    // Install Google Cloud SDK and kubectl
+                    sh '''
+                        set -e  # Exit on any error
+                        echo "Updating package lists..."
+                        apt-get update
+                        
+                        echo "Installing base dependencies..."
+                        apt-get install -y apt-transport-https ca-certificates gnupg curl
+                        
+                        echo "Adding Google Cloud SDK repository..."
+                        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+                        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+                        
+                        echo "Installing Google Cloud SDK and other required packages..."
+                        apt-get update
+                        apt-get install -y google-cloud-sdk google-cloud-sdk-gke-gcloud-auth-plugin kubectl git
+                    '''
+                    
+                    // Configure gcloud with refresh token
+                    withCredentials([
+                        string(credentialsId: 'GCP_CLIENT_ID', variable: 'GCP_CLIENT_ID'),
+                        string(credentialsId: 'GCP_REFRESH_TOKEN', variable: 'GCP_REFRESH_TOKEN'),
+                        string(credentialsId: 'GCP_PROJECT_ID', variable: 'GCP_PROJECT_ID'),
+                        string(credentialsId: 'GKE_CLUSTER_NAME', variable: 'GKE_CLUSTER_NAME'),
+                        string(credentialsId: 'GKE_CLUSTER_ZONE', variable: 'GKE_CLUSTER_ZONE')
+                    ]) {
+                        sh """
+                            set -e  # Exit on any error
+                            echo "Authenticating with Google Cloud..."
+                            gcloud auth activate-refresh-token ${GCP_CLIENT_ID} ${GCP_REFRESH_TOKEN}
+                            
+                            echo "Setting GCP project..."
+                            gcloud config set project ${GCP_PROJECT_ID}
+                            
+                            echo "Getting GKE cluster credentials..."
+                            gcloud container clusters get-credentials ${GKE_CLUSTER_NAME} --zone ${GKE_CLUSTER_ZONE}
+                        """
+                    }
+                    
+                    // Verify kubectl configuration
+                    sh '''
+                        echo "Verifying kubectl connectivity..."
+                        kubectl get nodes
+                    '''
+                    
+                    // Deploy Kubernetes resources
+                    sh """
+                        set -e  # Exit on any error
+                        
+                        echo "Cloning Kubernetes manifests repository..."
+                        git clone "${MANIFEST_REPO}" k8s-repo
+                        cd k8s-repo
+                        
+                        echo "Updating manifest file..."
+                        awk -v image="${DOCKER_IMAGE}:${DOCKER_TAG}" '
+                            /image:/ {\$0 = "        image: " image}
+                            {print}
+                        ' app.yml > temp.yml && mv temp.yml app.yml
+                        
+                        echo "Checking for changes..."
+                        if [ -n "\$(git status -s)" ]; then
+                            echo "Changes detected. Applying Kubernetes manifests..."
+                            kubectl apply -f .
+                            echo "Kubernetes resources updated successfully"
+                        else
+                            echo "No changes detected in Kubernetes manifests."
+                        fi
+                    """
+                }
+            }
+            post {
+                success {
+                    echo "Deploy stage completed successfully"
+                }
+                failure {
+                    echo "Deploy stage failed"
+                }
+                always {
+                    sh 'docker rmi ubuntu:22.04 || true'
+                    cleanWs()
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+            sh 'docker system prune -af || true'
+        }
+    }
+}

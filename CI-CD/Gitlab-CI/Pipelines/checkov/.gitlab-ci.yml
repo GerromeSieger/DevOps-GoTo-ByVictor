@@ -1,0 +1,45 @@
+stages:
+  - security
+
+# Define variables
+variables:
+  RESULTS_DIR: "${CI_PROJECT_DIR}/results"
+
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "**/*.tf"
+        - "**/*.yaml"
+        - "**/*.yml"
+        - "**/*.json"
+        - ".gitlab-ci.yml"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.tf"
+        - "**/*.yaml"
+        - "**/*.yml"
+        - "**/*.json"
+
+# Security scanning job using Checkov
+checkov-scan:
+  stage: security
+  image: python:3.11-slim
+  before_script:
+    - pip install checkov
+    - mkdir -p $RESULTS_DIR
+  script:
+    - echo "Running Checkov scan..."
+    - |
+      checkov -d . \
+        --framework terraform,cloudformation,kubernetes,dockerfile,helm \
+        --soft-fail \
+        --quiet \
+        --output sarif \
+        > $RESULTS_DIR/checkov-output.sarif 2>&1 || echo "Checkov completed with findings"
+    - echo "Scan completed. Results saved to $RESULTS_DIR/checkov-output.sarif"
+  artifacts:
+    paths:
+      - $RESULTS_DIR/checkov-output.sarif
+    expire_in: 1 week

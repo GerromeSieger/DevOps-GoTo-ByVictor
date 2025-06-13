@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+    environment {
+       DOCKER_TAG = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+    }
+    stages {
+        stage('Build') {
+            environment {
+                DOCKER_IMAGE = credentials('docker-image')
+                DOCKERHUB_CREDENTIALS = credentials('dockerhub-cred')
+            }            
+            agent {
+                docker { 
+                    image 'docker:dind'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u root:root'
+                    reuseNode true
+                }
+            }
+            
+            steps {
+                script {
+                    echo "DOCKER_IMAGE: ${DOCKER_IMAGE}"
+                    echo "DOCKER_TAG: ${DOCKER_TAG}"
+                    sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+                    def customImage = docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                    customImage.push()
+                    customImage.push("latest")
+                    sh 'docker logout'
+                }
+            }
+            
+            post {
+                always {
+                    sh 'docker rmi docker:dind || true'
+                }
+            }
+        }
+
+        stage ('Deploy') {     
+            agent { 
+                docker { 
+                    image 'ubuntu:22.04'
+                    args '-u root'
+                    reuseNode true 
+                }  
+            } 
+            steps {
+                withCredentials([
+                    string(credentialsId: 'manifest-repo', variable: 'K8S_MANIFEST_REPO'),
+                    string(credentialsId: 'access-token', variable: 'MANIFEST_REPO_PAT'),
+                    file(credentialsId: 'kubeconfig-file', variable: 'KUBECONFIG_FILE')
+                ]) {
+                    sh '''
+                        apt update && apt install curl git -y
+                        mkdir -p $HOME/.kube
+                        cat "${KUBECONFIG_FILE}" >> $HOME/.kube/config
+                        chmod 600 $HOME/.kube/config
+                        curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+                        chmod +x ./kubectl
+                        mv ./kubectl /usr/local/bin/kubectl
+                        git clone https://x-access-token:${MANIFEST_REPO_PAT}@${K8S_MANIFEST_REPO} k8s-manifests
+                        kubectl get nodes
+                    '''
+                }
+            }
+            post {
+                always {
+                    sh 'docker rmi ubuntu:22.04 || true'
+                }
+            }                 
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+            sh 'docker system prune -af || true'
+        }
+    }
+}

@@ -1,0 +1,61 @@
+pipeline {
+    agent any
+    
+    environment {
+        ANT_OPTS = "-Xmx512m"
+        IVY_VERSION = "2.5.1"
+    }
+    
+    stages {
+        stage('Build with Ant') {
+            agent {
+                docker {
+                    image 'eclipse-temurin:17-jdk'
+                    args '-u root'
+                    reuseNode true
+                }
+            }
+            steps {
+                script {
+                    try {
+                        echo 'Setting up build environment...'
+                        sh '''
+                            apt-get update
+                            apt-get install -y ant
+                            mkdir -p .ant lib
+                            wget -q -O /tmp/ivy.jar https://repo1.maven.org/maven2/org/apache/ivy/ivy/${IVY_VERSION}/ivy-${IVY_VERSION}.jar
+                            mkdir -p ~/.ant/lib
+                            mv /tmp/ivy.jar ~/.ant/lib/
+                        '''
+                        
+                        echo 'Building the Java application with Ant and Ivy...'
+                        sh 'ant -buildfile antbuild.xml resolve'
+                        sh 'ant -buildfile antbuild.xml compile jar'
+                        
+                        echo 'Archiving artifacts...'
+                        archiveArtifacts artifacts: 'build/jar/*.jar, build/classes/**', fingerprint: true
+                        
+                        echo 'Build completed successfully'
+                    } catch (Exception e) {
+                        echo "Error occurred during the build process: ${e.message}"
+                        currentBuild.result = 'FAILURE'
+                        throw e
+                    }
+                }
+            }
+            post {
+                always {
+                    echo 'Cleaning up Docker image...'
+                    sh 'docker rmi eclipse-temurin:17-jdk || true'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            cleanWs()
+        }
+    }
+}

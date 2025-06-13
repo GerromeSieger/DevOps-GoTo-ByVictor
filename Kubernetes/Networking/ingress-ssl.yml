@@ -3,21 +3,32 @@ kind: Ingress
 metadata:
   name: my-ingress-ssl
   annotations:
-    kubernetes.io/ingress.class: nginx
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"  # Force HTTPS redirect
 spec:
   tls:
   - hosts:
-    - gerrome.com.ng
-    secretName: gerrome.com.ng-tls
+    - app.sieger.com.ng
+    secretName: app.sieger.com.ng-tls
+  ingressClassName: nginx
   rules:
-  - host: gerrome.com.ng
+  - host: app.sieger.com.ng
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: react-service
+            name: next-service
             port: 
               number: 80
+  # - host: vue.sieger.com.ng
+  #   http:
+  #     paths:
+  #     - path: /(.*)
+  #       pathType: ImplementationSpecific
+  #       backend:
+  #         service:
+  #           name: vue-service
+  #           port: 
+  #             number: 80
