@@ -7,12 +7,12 @@ on:
     branches: [ main ]
 
 jobs:
-  snyk-code-scan:
-    name: Snyk Source Code Scan
+  test:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    environment: dev  
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -25,7 +25,11 @@ jobs:
         
       - name: Run Snyk to check for code vulnerabilities
         run: |
-          snyk code test --severity-threshold=high --sarif-file-output=snyk-code-results.sarif || true
+          snyk code test --severity-threshold=high --json-file-output=snyk-code-results.json || true
+          if [ -f snyk-code-results.json ]; then
+            python3 -m json.tool snyk-code-results.json > snyk-code-results-formatted.json
+            mv snyk-code-results-formatted.json snyk-code-results.json
+          fi
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       
@@ -33,9 +37,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: snyk-code-scan-results
-          path: snyk-code-results.sarif
+          path: snyk-code-results.json
           retention-days: 7
-
 
   snyk-docker-scan:
     name: Snyk Docker Image Scan
